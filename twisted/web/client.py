@@ -8,6 +8,7 @@ HTTP client.
 
 import os, types
 from urlparse import urlunparse
+from urllib import splithost, splittype
 import zlib
 
 from zope.interface import implements
@@ -40,11 +41,20 @@ class HTTPPageGetter(http.HTTPClient):
     Typically used with L{HTTPClientFactory}.  Note that this class does not, by
     itself, do anything with the response.  If you want to download a resource
     into a file, use L{HTTPPageDownloader} instead.
+
+    @ivar _completelyDone: A boolean indicating whether any further requests are
+        necessary after this one completes in order to provide a result to
+        C{self.factory.deferred}.  If it is C{False}, then a redirect is going
+        to be followed.  Otherwise, this protocol's connection is the last one
+        before firing the result Deferred.  This is used to make sure the result
+        Deferred is only fired after the connection is cleaned up.
     """
 
     quietLoss = 0
     followRedirect = True
     failed = 0
+
+    _completelyDone = True
 
     _specialHeaders = set(('host', 'user-agent', 'cookie', 'content-length'))
 
@@ -134,6 +144,7 @@ class HTTPPageGetter(http.HTTPClient):
                 self.transport.loseConnection()
                 return
 
+            self._completelyDone = False
             self.factory.setURL(url)
 
             if self.factory.scheme == 'https':
@@ -164,10 +175,21 @@ class HTTPPageGetter(http.HTTPClient):
         self.factory.method = 'GET'
         self.handleStatus_301()
 
+
     def connectionLost(self, reason):
+        """
+        When the connection used to issue the HTTP request is closed, notify the
+        factory if we have not already, so it can produce a result.
+        """
         if not self.quietLoss:
             http.HTTPClient.connectionLost(self, reason)
             self.factory.noPage(reason)
+        if self._completelyDone:
+            # Only if we think we're completely done do we tell the factory that
+            # we're "disconnected".  This way when we're following redirects,
+            # only the last protocol used will fire the _disconnectedDeferred.
+            self.factory._disconnectedDeferred.callback(None)
+
 
     def handleResponse(self, response):
         if self.quietLoss:
@@ -268,6 +290,12 @@ class HTTPClientFactory(protocol.ClientFactory):
 
     @type _redirectCount: int
     @ivar _redirectCount: The current number of HTTP redirects encountered.
+
+    @ivar _disconnectedDeferred: A L{Deferred} which only fires after the last
+        connection associated with the request (redirects may cause multiple
+        connections to be required) has closed.  The result Deferred will only
+        fire after this Deferred, so that callers can be assured that there are
+        no more event sources in the reactor once they get the result.
     """
 
     protocol = HTTPPageGetter
@@ -305,8 +333,23 @@ class HTTPClientFactory(protocol.ClientFactory):
         self.setURL(url)
 
         self.waiting = 1
+        self._disconnectedDeferred = defer.Deferred()
         self.deferred = defer.Deferred()
+        # Make sure the first callback on the result Deferred pauses the
+        # callback chain until the request connection is closed.
+        self.deferred.addBoth(self._waitForDisconnect)
         self.response_headers = None
+
+
+    def _waitForDisconnect(self, passthrough):
+        """
+        Chain onto the _disconnectedDeferred, preserving C{passthrough}, so that
+        the result is only available after the associated connection has been
+        closed.
+        """
+        self._disconnectedDeferred.addCallback(lambda ignored: passthrough)
+        return self._disconnectedDeferred
+
 
     def __repr__(self):
         return "<%s: %s>" % (self.__class__.__name__, self.url)
@@ -358,9 +401,18 @@ class HTTPClientFactory(protocol.ClientFactory):
             self.deferred.errback(reason)
 
     def clientConnectionFailed(self, _, reason):
+        """
+        When a connection attempt fails, the request cannot be issued.  If no
+        result has yet been provided to the result Deferred, provide the
+        connection failure reason as an error result.
+        """
         if self.waiting:
             self.waiting = 0
+            # If the connection attempt failed, there is nothing more to
+            # disconnect, so just fire that Deferred now.
+            self._disconnectedDeferred.callback(None)
             self.deferred.errback(reason)
+
 
 
 class HTTPDownloader(HTTPClientFactory):
@@ -794,13 +846,22 @@ class Agent(_AgentMixin):
     @ivar _contextFactory: A web context factory which will be used to create
         SSL context objects for any SSL connections the agent needs to make.
 
+    @ivar _connectTimeout: If not C{None}, the timeout passed to C{connectTCP}
+        or C{connectSSL} for specifying the connection timeout.
+
+    @ivar _bindAddress: If not C{None}, the address passed to C{connectTCP} or
+        C{connectSSL} for specifying the local address to bind to.
+
     @since: 9.0
     """
     _protocol = HTTP11ClientProtocol
 
-    def __init__(self, reactor, contextFactory=WebClientContextFactory()):
+    def __init__(self, reactor, contextFactory=WebClientContextFactory(),
+                 connectTimeout=None, bindAddress=None):
         self._reactor = reactor
         self._contextFactory = contextFactory
+        self._connectTimeout = connectTimeout
+        self._bindAddress = bindAddress
 
 
     def _wrapContextFactory(self, host, port):
@@ -840,10 +901,15 @@ class Agent(_AgentMixin):
             C{self._protocol}.
         """
         cc = ClientCreator(self._reactor, self._protocol)
+        kwargs = {}
+        if self._connectTimeout is not None:
+            kwargs['timeout'] = self._connectTimeout
+        kwargs['bindAddress'] = self._bindAddress
         if scheme == 'http':
-            d = cc.connectTCP(host, port)
+            d = cc.connectTCP(host, port, **kwargs)
         elif scheme == 'https':
-            d = cc.connectSSL(host, port, self._wrapContextFactory(host, port))
+            d = cc.connectSSL(host, port, self._wrapContextFactory(host, port),
+                              **kwargs)
         else:
             d = defer.fail(SchemeNotSupported(
                     "Unsupported scheme: %r" % (scheme,)))
@@ -928,17 +994,27 @@ class _FakeUrllib2Request(object):
     """
     A fake C{urllib2.Request} object for C{cookielib} to work with.
 
+    @see: U{http://docs.python.org/library/urllib2.html#request-objects}
+
     @type uri: C{str}
     @ivar uri: Request URI.
 
     @type headers: L{twisted.web.http_headers.Headers}
     @ivar headers: Request headers.
 
+    @type type: C{str}
+    @ivar type: The scheme of the URI.
+
+    @type host: C{str}
+    @ivar host: The host[:port] of the URI.
+
     @since: 11.1
     """
     def __init__(self, uri):
         self.uri = uri
         self.headers = Headers()
+        self.type, rest = splittype(self.uri)
+        self.host, rest = splithost(rest)
 
 
     def has_header(self, header):
@@ -958,6 +1034,14 @@ class _FakeUrllib2Request(object):
         if headers is not None:
             return headers[0]
         return None
+
+
+    def get_host(self):
+        return self.host
+
+
+    def get_type(self):
+        return self.type
 
 
     def is_unverifiable(self):
