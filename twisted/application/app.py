@@ -2,17 +2,18 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
-import sys, os, pdb, getpass, traceback, signal, warnings
+import sys, os, pdb, getpass, traceback, signal
+from operator import attrgetter
 
 from twisted.python import runtime, log, usage, failure, util, logfile
 from twisted.python.versions import Version
-from twisted.python.reflect import qual
+from twisted.python.reflect import qual, namedAny
 from twisted.python.deprecate import deprecated
 from twisted.python.log import ILogObserver
 from twisted.persisted import sob
 from twisted.application import service, reactors
 from twisted.internet import defer
-from twisted import copyright
+from twisted import copyright, plugin
 
 # Expose the new implementation of installReactor at the old location.
 from twisted.application.reactors import installReactor
@@ -190,6 +191,9 @@ class AppLogger(object):
         default.
     @type _logfilename: C{str}
 
+    @ivar _observerFactory: Callable object that will create a log observer, or
+        None.
+
     @ivar _observer: log observer added at C{start} and removed at C{stop}.
     @type _observer: C{callable}
     """
@@ -200,20 +204,26 @@ class AppLogger(object):
         self._logrotatelength = options.get("logrotatelength", 1048576)
         self._logmaxfiles = options.get("logmaxfiles", None)
         self._logfilemode = options.get("logfilemode", None)
+        self._observerFactory = options.get("logger") or None
 
 
     def start(self, application):
         """
         Initialize the logging system.
 
-        If an L{ILogObserver} component has been set on C{application}, then
-        it will be used as the log observer.  Otherwise a log observer will be
-        created based on the command-line options.
+        If a customer logger was specified on the command line it will be
+        used. If not, and an L{ILogObserver} component has been set on
+        C{application}, then it will be used as the log observer.  Otherwise a
+        log observer will be created based on the command-line options for
+        built-in loggers (e.g. C{--logfile}).
 
         @param application: The application on which to check for an
             L{ILogObserver}.
         """
-        observer = application.getComponent(ILogObserver, None)
+        if self._observerFactory is not None:
+            observer = self._observerFactory()
+        else:
+            observer = application.getComponent(ILogObserver, None)
 
         if observer is None:
             observer = self._getLogObserver()
@@ -487,13 +497,15 @@ class ReactorSelectionMixin:
     """
     zsh_actions = {"reactor" : _reactorZshAction}
     messageOutput = sys.stdout
+    _getReactorTypes = staticmethod(reactors.getReactorTypes)
 
 
     def opt_help_reactors(self):
         """
         Display a list of possibly available reactor names.
         """
-        for r in reactors.getReactorTypes():
+        rcts = sorted(self._getReactorTypes(), key=attrgetter('shortName'))
+        for r in rcts:
             self.messageOutput.write('    %-4s\t%s\n' %
                                      (r.shortName, r.description))
         raise SystemExit(0)
@@ -547,6 +559,10 @@ class ServerOptions(usage.Options, ReactorSelectionMixin):
                       "Maximum number of log files to keep", int],
                      ['logfilemode', None, None,
                       "Default file mode to create the file", lambda mode: int(mode, 8)],
+                     ['logger', None, None,
+                      "A fully-qualified name to a log observer factory to use "
+                      "for the initial log observer.  Takes precedence over "
+                      "--logfile and --syslog (when available)."],
                      ['profile', 'p', None,
                       "Run in profile mode, dumping results to specified file"],
                      ['profiler', None, "hotshot",
@@ -570,6 +586,8 @@ class ServerOptions(usage.Options, ReactorSelectionMixin):
                    "source":'_files -g "*.tas"',
                    "rundir":"_dirs"}
     #zsh_actionDescr = {"logfile":"log file name", "random":"random seed"}
+
+    _getPlugins = staticmethod(plugin.getPlugins)
 
     def __init__(self, *a, **kw):
         self['debug'] = False
@@ -608,15 +626,26 @@ class ServerOptions(usage.Options, ReactorSelectionMixin):
     def postOptions(self):
         if self.subCommand or self['python']:
             self['no_save'] = True
+        if self['logger'] is not None:
+            try:
+                self['logger'] = namedAny(self['logger'])
+            except Exception, e:
+                raise usage.UsageError("Logger '%s' could not be imported: %s" 
+                                       % (self['logger'], e))
 
 
     def subCommands(self):
-        from twisted import plugin
-        plugins = plugin.getPlugins(service.IServiceMaker)
+        plugins = self._getPlugins(service.IServiceMaker)
         self.loadedPlugins = {}
-        for plug in plugins:
+        for plug in sorted(plugins, key=attrgetter('tapname')):
             self.loadedPlugins[plug.tapname] = plug
-            yield (plug.tapname, None, lambda: plug.options(), plug.description)
+            yield (plug.tapname,
+                   None,
+                   # Avoid resolving the options attribute right away, in case
+                   # it's a property with a non-trivial getter (eg, one which
+                   # imports modules).
+                   lambda plug=plug: plug.options(),
+                   plug.description)
     subCommands = property(subCommands)
 
 

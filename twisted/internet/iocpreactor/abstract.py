@@ -6,7 +6,7 @@ Abstract file handle class
 """
 
 from twisted.internet import main, error, interfaces
-from twisted.internet.abstract import _ConsumerMixin
+from twisted.internet.abstract import _ConsumerMixin, _LogOwner
 from twisted.python import failure
 
 from zope.interface import implements
@@ -18,7 +18,7 @@ from twisted.internet.iocpreactor import iocpsupport as _iocp
 
 
 
-class FileHandle(_ConsumerMixin):
+class FileHandle(_ConsumerMixin, _LogOwner):
     """
     File handle that can read and write asynchronously
     """
@@ -33,15 +33,6 @@ class FileHandle(_ConsumerMixin):
     _readSize = 0 # how much data we have in the read buffer
     _readScheduled = None
     _readScheduledInOS = False
-
-
-    def logPrefix(self):
-        """
-        Override this method to insert custom logging behavior.  Its
-        return value will be inserted in front of every line.  It may
-        be called more times than the number of output lines.
-        """
-        return '-'
 
 
     def startReading(self):
@@ -281,7 +272,7 @@ class FileHandle(_ConsumerMixin):
         if data:
             self._tempDataBuffer.append(data)
             self._tempDataLen += len(data)
-            if self.producer is not None:
+            if self.producer is not None and self.streamingProducer:
                 if (len(self.dataBuffer) + self._tempDataLen
                     > self.writeBufferSize):
                     self.producerPaused = True
@@ -295,7 +286,7 @@ class FileHandle(_ConsumerMixin):
         self._tempDataBuffer.extend(iovec)
         for i in iovec:
             self._tempDataLen += len(i)
-        if self.producer is not None:
+        if self.producer is not None and self.streamingProducer:
             if len(self.dataBuffer) + self._tempDataLen > self.writeBufferSize:
                 self.producerPaused = True
                 self.producer.pauseProducing()

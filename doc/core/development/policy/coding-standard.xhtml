@@ -75,8 +75,9 @@
      which might be broken by a particular change.</p>
 
     <p>It is strongly suggested that developers learn to use Emacs, and use
-     the <code>twisted-dev.el</code> file included in the TwistedEmacs
-     package to bind the F9 key to <q>run unit tests</q> and bang on it
+     the <code>twisted-dev.el</code> file included in
+     <a href="http://launchpad.net/twisted-emacs">twisted-emacs</a>
+     to bind the F9 key to <q>run unit tests</q> and bang on it
      frequently.  Support for other editors is unavailable at this time but
      we would love to provide it.</p>
 
@@ -280,18 +281,9 @@ class Ninja(object):
     <a href="http://epydoc.sourceforge.net/manual-epytext.html"
     >Epytext Markup Language documentation</a>.</p>
 
-    <p>Additionally, to accommodate emacs users:</p>
-
-    <ul>
-      <li>Single quotes of the type of the docstring's triple-quote
-      should be escaped. This will prevent font-lock from
-      accidentally fontifying large portions of the file as a
-      string.</li>
-
-      <li>Code examples in docstrings should be prefixed by the |
-      character. This will prevent IM-Python from regarding sample
-      code as real functions, methods, and classes.</li>
-    </ul>
+    <p>Additionally, to accommodate emacs users, single quotes of the type of
+    the docstring's triple-quote should be escaped. This will prevent font-lock from
+    accidentally fontifying large portions of the file as a string.</p>
 
     <p>For example,</p>
 <pre class="python">
@@ -308,13 +300,13 @@ def foo2bar(f):
 
     For example::
 
-      |  import wombat
-      |  def sample(something):
-      |      f = something.getFoo()
-      |      f.doFooThing()
-      |      b = wombat.foo2bar(f)
-      |      b.doBarThing()
-      |      return b
+        import wombat
+        def sample(something):
+            f = something.getFoo()
+            f.doFooThing()
+            b = wombat.foo2bar(f)
+            b.doBarThing()
+            return b
 
     """
     # Optionally, actual code can go here.

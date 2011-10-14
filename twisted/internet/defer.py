@@ -721,7 +721,7 @@ class DeferredList(Deferred):
     L{DeferredList} is implemented by adding callbacks and errbacks to each
     L{Deferred} in the list passed to it.  This means callbacks and errbacks
     added to the Deferreds before they are passed to L{DeferredList} will change
-    the result that L{DeferredList} sees (ie, L{DeferredList} is not special).
+    the result that L{DeferredList} sees (i.e., L{DeferredList} is not special).
     Callbacks and errbacks can also be added to the Deferreds after they are
     passed to L{DeferredList} and L{DeferredList} may change the result that
     they see.
@@ -818,16 +818,30 @@ def _parseDListResult(l, fireOnOneErrback=False):
 
 
 
-def gatherResults(deferredList):
+def gatherResults(deferredList, consumeErrors=False):
     """
-    Returns list with result of given L{Deferred}s.
+    Returns, via a L{Deferred}, a list with the results of the given
+    L{Deferred}s - in effect, a "join" of multiple deferred operations.
 
-    This builds on L{DeferredList} but is useful since you don't
-    need to parse the result for success/failure.
+    The returned L{Deferred} will fire when I{all} of the provided L{Deferred}s
+    have fired, or when any one of them has failed.
+
+    This differs from L{DeferredList} in that you don't need to parse
+    the result for success/failure.
 
     @type deferredList:  C{list} of L{Deferred}s
+
+    @param consumeErrors: (keyword param) a flag, defaulting to False,
+        indicating that failures in any of the given L{Deferreds} should not be
+        propagated to errbacks added to the individual L{Deferreds} after this
+        L{gatherResults} invocation.  Any such errors in the individual
+        L{Deferred}s will be converted to a callback result of C{None}.  This
+        is useful to prevent spurious 'Unhandled error in Deferred' messages
+        from being logged.  This parameter is available since 11.1.0.
+    @type consumeErrors: C{bool}
     """
-    d = DeferredList(deferredList, fireOnOneErrback=True)
+    d = DeferredList(deferredList, fireOnOneErrback=True,
+                                   consumeErrors=consumeErrors)
     d.addCallback(_parseDListResult)
     return d
 
@@ -1130,12 +1144,23 @@ def inlineCallbacks(f):
     available. The generator will be sent the result of the L{Deferred} with the
     'send' method on generators, or if the result was a failure, 'throw'.
 
+    Things that are not L{Deferred}s may also be yielded, and your generator
+    will be resumed with the same object sent back. This means C{yield}
+    performs an operation roughly equivalent to L{maybeDeferred}.
+
     Your inlineCallbacks-enabled generator will return a L{Deferred} object, which
     will result in the return value of the generator (or will fail with a
     failure object if your generator raises an unhandled exception). Note that
     you can't use C{return result} to return a value; use C{returnValue(result)}
     instead. Falling off the end of the generator, or simply using C{return}
     will cause the L{Deferred} to have a result of C{None}.
+
+    Be aware that L{returnValue} will not accept a L{Deferred} as a parameter.
+    If you believe the thing you'd like to return could be a L{Deferred}, do
+    this::
+
+        result = yield result
+        returnValue(result)
 
     The L{Deferred} returned from your deferred generator may errback if your
     generator raised an exception::

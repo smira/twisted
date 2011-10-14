@@ -21,9 +21,6 @@ from twisted.internet.defer import Deferred, succeed
 from twisted.internet.protocol import ProcessProtocol
 from twisted.internet.error import ProcessDone, ProcessTerminated
 from twisted.internet import _signals
-from twisted.python import runtime
-if not runtime.platform.isWindows():
-    from twisted.internet import process
 
 
 
@@ -31,9 +28,17 @@ class _ShutdownCallbackProcessProtocol(ProcessProtocol):
     """
     An L{IProcessProtocol} which fires a Deferred when the process it is
     associated with ends.
+
+    @ivar received: A C{dict} mapping file descriptors to lists of bytes
+        received from the child process on those file descriptors.
     """
     def __init__(self, whenFinished):
         self.whenFinished = whenFinished
+        self.received = {}
+
+
+    def childDataReceived(self, fd, bytes):
+        self.received.setdefault(fd, []).append(bytes)
 
 
     def processEnded(self, reason):
@@ -77,6 +82,87 @@ class ProcessTestsBuilderBase(ReactorBuilder):
         # Let the process run and exit so we don't leave a zombie around.
         ended.addCallback(lambda ignored: reactor.stop())
         self.runReactor(reactor)
+
+
+    def _writeTest(self, write):
+        """
+        Helper for testing L{IProcessTransport} write functionality.  This
+        method spawns a child process and gives C{write} a chance to write some
+        bytes to it.  It then verifies that the bytes were actually written to
+        it (by relying on the child process to echo them back).
+
+        @param write: A two-argument callable.  This is invoked with a process
+            transport and some bytes to write to it.
+        """
+        reactor = self.buildReactor()
+
+        ended = Deferred()
+        protocol = _ShutdownCallbackProcessProtocol(ended)
+
+        bytes = "hello, world" + os.linesep
+        program = (
+            "import sys\n"
+            "sys.stdout.write(sys.stdin.readline())\n"
+            )
+
+        def startup():
+            transport = reactor.spawnProcess(
+                protocol, sys.executable, [sys.executable, "-c", program])
+            try:
+                write(transport, bytes)
+            except:
+                err(None, "Unhandled exception while writing")
+                transport.signalProcess('KILL')
+        reactor.callWhenRunning(startup)
+
+        ended.addCallback(lambda ignored: reactor.stop())
+
+        self.runReactor(reactor)
+        self.assertEqual(bytes, "".join(protocol.received[1]))
+
+
+    def test_write(self):
+        """
+        L{IProcessTransport.write} writes the specified C{str} to the standard
+        input of the child process.
+        """
+        def write(transport, bytes):
+            transport.write(bytes)
+        self._writeTest(write)
+
+
+    def test_writeSequence(self):
+        """
+        L{IProcessTransport.writeSequence} writes the specified C{list} of
+        C{str} to the standard input of the child process.
+        """
+        def write(transport, bytes):
+            transport.writeSequence(list(bytes))
+        self._writeTest(write)
+
+
+    def test_writeToChild(self):
+        """
+        L{IProcessTransport.writeToChild} writes the specified C{str} to the
+        specified file descriptor of the child process.
+        """
+        def write(transport, bytes):
+            transport.writeToChild(0, bytes)
+        self._writeTest(write)
+
+
+    def test_writeToChildBadFileDescriptor(self):
+        """
+        L{IProcessTransport.writeToChild} raises L{KeyError} if passed a file
+        descriptor which is was not set up by L{IReactorProcess.spawnProcess}.
+        """
+        def write(transport, bytes):
+            try:
+                self.assertRaises(KeyError, transport.writeToChild, 13, bytes)
+            finally:
+                # Just get the process to exit so the test can complete
+                transport.write(bytes)
+        self._writeTest(write)
 
 
     def test_spawnProcessEarlyIsReaped(self):
@@ -596,259 +682,3 @@ class PotentialZombieWarningTests(TestCase):
             "Twisted 10.0.0: There is no longer any potential for zombie "
             "process.")
         self.assertEqual(len(warnings), 1)
-
-
-
-class FakeFile(object):
-    """
-    A fake file object which records when it is closed.
-    """
-    def __init__(self, testcase):
-        self.testcase = testcase
-
-
-    def close(self):
-        self.testcase.closedFile = True
-
-
-
-class FakeResourceModule(object):
-    """
-    Fake version of L{resource} which hard-codes a particular rlimit for maximum
-    open files.
-    """
-    RLIMIT_NOFILE = 1
-    def getrlimit(self, no):
-        """
-        Mocks just the getrlimit method of the resource module, simulating what
-        happens on OS-X when a ridiculous number is returned.
-        """
-        return [0, 9223372036854775808]
-
-
-
-class FDDetectorTest(TestCase):
-    """
-    Tests for _FDDetector class in twisted.internet.process, which detects
-    which function to drop in place for the _listOpenFDs method.
-
-    @ivar devfs: A flag indicating whether the filesystem fake will indicate
-        that /dev/fd exists.
-
-    @ivar accurateDevFDResults: A flag indicating whether the /dev/fd fake
-        returns accurate open file information.
-
-    @ivar procfs: A flag indicating whether the filesystem fake will indicate
-        that /proc/<pid>/fd exists.
-
-    @ivar openedFile: A flag indicating whether to include an extra file
-        descriptor in the result of listing /dev/fd.
-    """
-    if runtime.platform.isWindows():
-        skip = (
-            "Process support does not need to detect open file descriptors on "
-            "Windows")
-
-    devfs = False
-    accurateDevFDResults = False
-
-    procfs = False
-    openedFile = False
-    closedFile = False
-
-    savedResourceModule = None
-
-    def getpid(self):
-        """
-        Fake os.getpid, always return the same thing
-        """
-        return 123
-
-
-    def listdir(self, arg):
-        """
-        Fake os.listdir, depending on what mode we're in to simulate
-        behaviour.
-
-        @param arg: the directory to list
-        """
-        if arg == '/proc/123/fd':
-            if self.procfs:
-                return ["0","1","2"]
-            else:
-                raise OSError
-
-        if arg == '/dev/fd':
-            if self.devfs:
-                if not self.accurateDevFDResults:
-                    # Always return the same thing
-                    return ["0","1","2"]
-                else:
-                    if self.openedFile:
-                        return ["0","1","2","3"]
-                    else:
-                        return ["0","1","2"]
-            else:
-                raise OSError()
-
-
-    def openfile(self, fname, mode):
-        """
-        This is a mock for L{open}.  It just keeps track of the fact that a file
-        has opened so an extra file descriptor is found in /dev/fd.
-
-        It also returns a L{FakeFile} which can be "closed". It would be more
-        realistic to make the FD list shrink when the file is "fake closed" but
-        it's not necessary for the detection algorithm we currently have in
-        process.py.
-        """
-        if self.openedFile:
-            self.fail("opening more than one file is not supported")
-        self.openedFile = True
-        return FakeFile(self)
-
-
-    def saveResourceModule(self):
-        """
-        Save the resource module so we can restore it later.
-        """
-        try:
-            import resource
-        except ImportError:
-            resource = None
-        self.savedResourceModule = resource
-
-
-    def hideResourceModule(self):
-        """
-        Make the L{resource} module unimportable for the remainder of the
-        current test method.
-        """
-        sys.modules['resource'] = None
-        self.addCleanup(self.replaceResourceModule)
-
-
-    def revealResourceModule(self):
-        """
-        Make a L{FakeResourceModule} instance importable at the L{resource}
-        name.
-        """
-        sys.modules['resource'] = FakeResourceModule()
-        self.addCleanup(self.replaceResourceModule)
-
-
-    def replaceResourceModule(self):
-        """
-        Restore the original resource module to L{sys.modules}.
-        """
-        sys.modules['resource'] = self.savedResourceModule
-
-
-    def setUp(self):
-        """
-        Set up the tests, giving ourselves a detector object to play with and
-        setting up its testable knobs to refer to our mocked versions.
-        """
-        self.detector = process._FDDetector()
-        self.detector.listdir = self.listdir
-        self.detector.getpid = self.getpid
-        self.detector.openfile = self.openfile
-
-
-    def test_identityOfListOpenFDsChanges(self):
-        """
-        Check that the identity of _listOpenFDs changes after running _listOpenFDs
-        the first time, but not after the second time it's run.
-
-        In other words, check that the monkey patching actually works.
-        """
-        # Create a new instance
-        detector = process._FDDetector()
-
-        first = detector._listOpenFDs.func_name
-        detector._listOpenFDs()
-        second = detector._listOpenFDs.func_name
-        detector._listOpenFDs()
-        third = detector._listOpenFDs.func_name
-
-        self.assertNotEquals(first, second)
-        self.assertEqual(second, third)
-
-
-    def test_accurateDevFDResults(self):
-        """
-        If there is no proc filesystem and /dev/fd returns accurate open file
-        descriptor information, L{process._devFDImplementation} is chosen.  This
-        is like FreeBSD with I{fdescfs} mounted.
-        """
-        self.procfs = False
-        self.devfs = True
-        self.accurateDevFDResults = True
-        self.assertEqual(
-            self.detector._getImplementation().func_name,
-            '_devFDImplementation')
-
-
-    def test_inaccurateDevFDResults(self):
-        """
-        If there is no proc filesystem and /dev/fd returns inaccurate
-        information, L{_process._fallbackFDImplementation} is selected.  This is
-        like FreeBSD without I{fdescfs} mounted.
-        """
-        self.procfs = False
-        self.devfs = True
-        self.accurateDevFDResults = False
-        self.assertEqual(
-            self.detector._getImplementation().func_name,
-            '_fallbackFDImplementation')
-
-
-    def test_procFilesystem(self):
-        """
-        If there is a proc filesystem, L{process._procFDImplementation} is
-        selected.  This is like Linux.
-        """
-        self.devfs = False
-        self.procfs = True
-        self.assertEqual(
-            self.detector._getImplementation().func_name,
-            '_procFDImplementation')
-
-
-    def test_resourceModuleOnly(self):
-        """
-        If there is no proc filesystem and no /dev/fd but the L{resource} module
-        is available, L{process._resourceFDImplementation} is selected.  We
-        shall conjecture that this is like most proprietary UNIXes.
-        """
-        self.devfs = False
-        self.procfs = False
-        self.revealResourceModule()
-        self.assertEqual(
-            self.detector._getImplementation().func_name,
-            '_resourceFDImplementation')
-
-
-    def test_withoutResourceModule(self):
-        """
-        If there is no proc filesystem, no /dev/fd, and no L{resource} module is
-        available, L{process._fallbackFDImplementation} is selected.  This maybe
-        be like certain proprietary UNIXes without a nicely compiled Python
-        runtime.
-        """
-        self.devfs = False
-        self.procfs = False
-        self.hideResourceModule()
-        self.assertEqual(
-            self.detector._getImplementation().func_name,
-            '_fallbackFDImplementation')
-
-
-    def test_checkSanityClosesFile(self):
-        """
-        Checking the devfs implementation for sanity closes the file it opens
-        to check.
-        """
-        self.devfs = True
-        self.detector._checkDevFDSanity()
-        self.assertTrue(self.closedFile)

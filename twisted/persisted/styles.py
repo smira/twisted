@@ -12,6 +12,8 @@ Different styles of persisted objects.
 import types
 import copy_reg
 import copy
+import inspect
+import sys
 
 try:
     import cStringIO as StringIO
@@ -20,6 +22,7 @@ except ImportError:
 
 # Twisted Imports
 from twisted.python import log
+from twisted.python import reflect
 
 oldModules = {}
 
@@ -114,9 +117,10 @@ class Ephemeral:
     def __getstate__(self):
         log.msg( "WARNING: serializing ephemeral %s" % self )
         import gc
-        if getattr(gc, 'get_referrers', None):
-            for r in gc.get_referrers(self):
-                log.msg( " referred to by %s" % (r,))
+        if '__pypy__' not in sys.builtin_module_names:
+            if getattr(gc, 'get_referrers', None):
+                for r in gc.get_referrers(self):
+                    log.msg( " referred to by %s" % (r,))
         return None
 
     def __setstate__(self, state):
@@ -143,14 +147,25 @@ def requireUpgrade(obj):
         obj.versionUpgrade()
         return obj
 
-from twisted.python import reflect
-
 def _aybabtu(c):
-    l = []
-    for b in reflect.allYourBase(c, Versioned):
-        if b not in l and b is not Versioned:
+    """
+    Get all of the parent classes of C{c}, not including C{c} itself, which are
+    strict subclasses of L{Versioned}.
+
+    The name comes from "all your base are belong to us", from the deprecated
+    L{twisted.python.reflect.allYourBase} function.
+
+    @param c: a class
+    @returns: list of classes
+    """
+    # begin with two classes that should *not* be included in the
+    # final result
+    l = [c, Versioned]
+    for b in inspect.getmro(c):
+        if b not in l and issubclass(b, Versioned):
             l.append(b)
-    return l
+    # return all except the unwanted classes
+    return l[2:]
 
 class Versioned:
     """
