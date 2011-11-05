@@ -198,6 +198,85 @@ class DeferredTestCase(unittest.TestCase):
         self.assertEqual(self.callback2Results,
                              (('hello',), {}))
 
+    def testTapCallbackWithoutArgs(self):
+        """
+        Test that L{Deferred.tapCallback} allows 0 extra arguments to be
+        given
+        """
+        deferred = defer.Deferred()
+        deferred.tapCallback(self._callback)
+        deferred.addCallback(self.assertEqual, "hello")
+        deferred.callback("hello")
+        self.assertEqual(self.errbackResults, None)
+        self.assertEqual(self.callbackResults, (('hello',), {}))
+
+    def testTapCallbackWithArgs(self):
+        """
+        Test that L{Deferred.tapCallback} allows 1 extra positional
+        argument to be given
+        """
+        deferred = defer.Deferred()
+        deferred.tapCallback(self._callback, "world")
+        deferred.addCallback(self.assertEqual, "hello")
+        deferred.callback("hello")
+        self.assertEqual(self.errbackResults, None)
+        self.assertEqual(self.callbackResults, (('hello', 'world'), {}))
+
+    def testTapCallbackWithKwArgs(self):
+        """
+        Test that L{Deferred.tapCallback} allows 1 extra keyword argument
+        to be given
+        """
+        deferred = defer.Deferred()
+        deferred.tapCallback(self._callback, world="world")
+        deferred.addCallback(self.assertEqual, "hello")
+        deferred.callback("hello")
+        self.assertEqual(self.errbackResults, None)
+        self.assertEqual(self.callbackResults,
+                             (('hello',), {'world': 'world'}))
+
+    def testTapErrbackWithoutArgs(self):
+        """
+        Test that L{Deferred.tapErrback} allows 0 extra arguments to be
+        given
+        """
+        f = failure.Failure("hello")
+        deferred = defer.Deferred()
+        deferred.tapErrback(self._errback)
+        deferred.addErrback(self.assertEqual, f)
+        deferred.addErrback(lambda _: "catch error")
+        deferred.errback(f)
+        self.assertEqual(self.callbackResults, None)
+        self.assertEqual(self.errbackResults, ((f,), {}))
+
+    def testTapErrbackbackWithArgs(self):
+        """
+        Test that L{Deferred.tapErrback} allows 1 extra positional
+        argument to be given
+        """
+        f = failure.Failure("hello")
+        deferred = defer.Deferred()
+        deferred.tapErrback(self._errback, "world")
+        deferred.addErrback(self.assertEqual, f)
+        deferred.addErrback(lambda _: "catch error")
+        deferred.errback(f)
+        self.assertEqual(self.callbackResults, None)
+        self.assertEqual(self.errbackResults, ((f, 'world'), {}))
+
+    def testTapErrbackbackWithKwArgs(self):
+        """
+        Test that L{Deferred.tapErrback} allows 1 extra keyword argument
+        to be given
+        """
+        f = failure.Failure("hello")
+        deferred = defer.Deferred()
+        deferred.tapErrback(self._errback, world="world")
+        deferred.addErrback(self.assertEqual, f)
+        deferred.addErrback(lambda _: "catch error")
+        deferred.errback(f)
+        self.assertEqual(self.callbackResults, None)
+        self.assertEqual(self.errbackResults, ((f,), {'world': 'world'}))
+
     def testDeferredList(self):
         defr1 = defer.Deferred()
         defr2 = defer.Deferred()
