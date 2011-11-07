@@ -321,60 +321,6 @@ class Deferred:
                                  callbackKeywords=kw, errbackKeywords=kw)
 
 
-    def tapCallbacks(self, callback, errback=None,
-                     callbackArgs=None, callbackKeywords=None,
-                     errbackArgs=None, errbackKeywords=None):
-        """
-        Tap a pair of callbacks (success and error) to this L{Deferred}.
-
-        These will be executed when the 'master' callback is run.
-        """
-        def runCallback(result):
-            callback(result, *(callbackArgs or []), **(callbackKeywords or {}))
-            return result
-
-        def runErrback(result):
-            errback(result, *(errbackArgs or []), **(errbackKeywords or {}))
-            return result
-
-        assert callable(callback)
-        assert errback is None or callable(errback)
-        return self.addCallbacks(runCallback, errback and runErrback)
-
-
-    def tapCallback(self, callback, *args, **kw):
-        """
-        Convenience method for tapping just a callback.
-
-        See L{tapCallbacks}.
-        """
-        return self.tapCallbacks(callback, callbackArgs=args,
-                                 callbackKeywords=kw)
-
-
-    def tapErrback(self, errback, *args, **kw):
-        """
-        Convenience method for tapping just an errback.
-
-        See L{tapCallbacks}.
-        """
-        return self.tapCallbacks(passthru, errback,
-                                 errbackArgs=args,
-                                 errbackKeywords=kw)
-
-
-    def tapBoth(self, callback, *args, **kw):
-        """
-        Convenience method for tapping a single callable as both a callback
-        and an errback.
-
-        See L{tapCallbacks}.
-        """
-        return self.tapCallbacks(callback, callback,
-                                 callbackArgs=args, errbackArgs=args,
-                                 callbackKeywords=kw, errbackKeywords=kw)
-
-
     def chainDeferred(self, d):
         """
         Chain another L{Deferred} to this L{Deferred}.
