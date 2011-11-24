@@ -3,8 +3,6 @@
 
 """
 Exceptions and errors for use in twisted.internet modules.
-
-Maintainer: Itamar Shtull-Trauring
 """
 
 import socket
@@ -97,8 +95,8 @@ class ConnectError(Exception):
         s = self.__doc__ or self.__class__.__name__
         if self.osError:
             s = '%s: %s' % (s, self.osError)
-        if self[0]:
-            s = '%s: %s' % (s, self[0])
+        if self.args[0]:
+            s = '%s: %s' % (s, self.args[0])
         s = '%s.' % s
         return s
 
@@ -220,6 +218,16 @@ class ConnectionLost(ConnectionClosed):
             s = '%s: %s' % (s, ' '.join(self.args))
         s = '%s.' % s
         return s
+
+
+
+class ConnectionAborted(ConnectionLost):
+    """
+    Connection was aborted locally, using
+    L{twisted.internet.interfaces.ITCPTransport.abortConnection}.
+
+    @since: 11.1
+    """
 
 
 

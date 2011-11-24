@@ -9,15 +9,65 @@ Tests for L{twisted.web.template}
 
 from cStringIO import StringIO
 
+from zope.interface.verify import verifyObject
+
 from twisted.internet.defer import succeed, gatherResults
 from twisted.trial.unittest import TestCase
 from twisted.web.template import (
-    Element, renderer, XMLFile, XMLString)
+    Element, TagLoader, renderer, tags, XMLFile, XMLString)
+from twisted.web.iweb import ITemplateLoader
 
 from twisted.web.error import MissingTemplateLoader, MissingRenderMethod
 
 from twisted.web._element import UnexposedMethodError
 from twisted.web.test._util import FlattenTestCase
+
+class TagFactoryTests(TestCase):
+    """
+    Tests for L{_TagFactory} through the publicly-exposed L{tags} object.
+    """
+    def test_lookupTag(self):
+        """
+        HTML tags can be retrieved through C{tags}.
+        """
+        tag = tags.a
+        self.assertEqual(tag.tagName, "a")
+
+
+    def test_lookupHTML5Tag(self):
+        """
+        Twisted supports the latest and greatest HTML tags from the HTML5
+        specification.
+        """
+        tag = tags.video
+        self.assertEqual(tag.tagName, "video")
+
+
+    def test_lookupTransparentTag(self):
+        """
+        To support transparent inclusion in templates, there is a special tag,
+        the transparent tag, which has no name of its own but is accessed
+        through the "transparent" attribute.
+        """
+        tag = tags.transparent
+        self.assertEqual(tag.tagName, "")
+
+
+    def test_lookupInvalidTag(self):
+        """
+        Invalid tags which are not part of HTML cause AttributeErrors when
+        accessed through C{tags}.
+        """
+        self.assertRaises(AttributeError, getattr, tags, "invalid")
+
+
+    def test_lookupXMP(self):
+        """
+        As a special case, the <xmp> tag is simply not available through
+        C{tags} or any other part of the templating machinery.
+        """
+        self.assertRaises(AttributeError, getattr, tags, "xmp")
+
 
 
 class ElementTests(TestCase):
@@ -454,3 +504,33 @@ class FlattenIntegrationTests(FlattenTestCase):
         self.assertFlattensImmediately(e2, "<p>3 1</p>")
 
 
+
+class TagLoaderTests(FlattenTestCase):
+    """
+    Tests for L{TagLoader}.
+    """
+    def setUp(self):
+        self.loader = TagLoader(tags.i('test'))
+
+
+    def test_interface(self):
+        """
+        An instance of L{TagLoader} provides L{ITemplateLoader}.
+        """
+        self.assertTrue(verifyObject(ITemplateLoader, self.loader))
+
+
+    def test_loadsList(self):
+        """
+        L{TagLoader.load} returns a list, per L{ITemplateLoader}.
+        """
+        self.assertIsInstance(self.loader.load(), list)
+
+
+    def test_flatten(self):
+        """
+        L{TagLoader} can be used in an L{Element}, and flattens as the tag used
+        to construct the L{TagLoader} would flatten.
+        """
+        e = Element(self.loader)
+        self.assertFlattensImmediately(e, '<i>test</i>')

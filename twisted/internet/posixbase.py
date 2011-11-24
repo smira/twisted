@@ -331,8 +331,10 @@ class PosixReactorBase(_SignalReactorMixin, ReactorBase):
                 return process.Process(self, executable, args, env, path,
                                        processProtocol, uid, gid, childFDs)
         elif platformType == "win32":
-            if uid is not None or gid is not None:
-                raise ValueError("The uid and gid parameters are not supported on Windows.")
+            if uid is not None:
+                raise ValueError("Setting UID is unsupported on this platform.")
+            if gid is not None:
+                raise ValueError("Setting GID is unsupported on this platform.")
             if usePTY:
                 raise ValueError("The usePTY parameter is not supported on Windows.")
             if childFDs:
@@ -459,7 +461,9 @@ class PosixReactorBase(_SignalReactorMixin, ReactorBase):
         """
         if tls is not None:
             tlsFactory = tls.TLSMemoryBIOFactory(contextFactory, False, factory)
-            return self.listenTCP(port, tlsFactory, backlog, interface)
+            port = self.listenTCP(port, tlsFactory, backlog, interface)
+            port._type = 'TLS'
+            return port
         elif ssl is not None:
             p = ssl.Port(
                 port, factory, contextFactory, backlog, interface, self)

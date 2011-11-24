@@ -29,7 +29,6 @@ from twisted.internet.interfaces import IPushProducer
 from twisted.internet.error import ConnectionDone, ConnectionLost
 from twisted.internet.defer import Deferred, gatherResults
 from twisted.internet.protocol import Protocol, ClientFactory, ServerFactory
-from twisted.internet import reactor
 from twisted.internet.task import TaskStopped
 from twisted.protocols.loopback import loopbackAsync, collapsingPumpPolicy
 from twisted.trial.unittest import TestCase
@@ -139,6 +138,53 @@ def buildTLSProtocol(server=False, transport=None):
         transport = StringTransport()
     sslProtocol.makeConnection(transport)
     return clientProtocol, sslProtocol
+
+
+
+class TLSMemoryBIOFactoryTests(TestCase):
+    """
+    Ensure TLSMemoryBIOFactory logging acts correctly.
+    """
+
+    def test_quiet(self):
+        """
+        L{TLSMemoryBIOFactory.doStart} and L{TLSMemoryBIOFactory.doStop} do
+        not log any messages.
+        """
+        logs = []
+        logger = logs.append
+        log.addObserver(logger)
+        self.addCleanup(log.removeObserver, logger)
+        wrappedFactory = ServerFactory()
+        # Disable logging on the wrapped factory:
+        wrappedFactory.doStart = lambda: None
+        wrappedFactory.doStop = lambda: None
+        factory = TLSMemoryBIOFactory(None, False, wrappedFactory)
+        factory.doStart()
+        factory.doStop()
+        self.assertEqual(logs, [])
+
+
+    def test_logPrefix(self):
+        """
+        L{TLSMemoryBIOFactory.logPrefix} amends the wrapped factory's log prefix
+        with a short string (C{"TLS"}) indicating the wrapping, rather than its
+        full class name.
+        """
+        factory = TLSMemoryBIOFactory(None, False, ServerFactory())
+        self.assertEqual("ServerFactory (TLS)", factory.logPrefix())
+
+
+    def test_logPrefixFallback(self):
+        """
+        If the wrapped factory does not provide L{ILoggingContext},
+        L{TLSMemoryBIOFactory.logPrefix} uses the wrapped factory's class name.
+        """
+        class NoFactory(object):
+            pass
+
+        factory = TLSMemoryBIOFactory(None, False, NoFactory())
+        self.assertEqual("NoFactory (TLS)", factory.logPrefix())
 
 
 
@@ -294,7 +340,7 @@ class TLSMemoryBIOTests(TestCase):
 
     def test_getPeerCertificate(self):
         """
-        L{TLSMemoryBIOFactory.getPeerCertificate} returns the
+        L{TLSMemoryBIOProtocol.getPeerCertificate} returns the
         L{OpenSSL.crypto.X509Type} instance representing the peer's
         certificate.
         """

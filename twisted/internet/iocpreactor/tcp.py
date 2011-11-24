@@ -10,8 +10,9 @@ import socket, operator, errno, struct
 from zope.interface import implements, classImplements
 
 from twisted.internet import interfaces, error, address, main, defer
-from twisted.internet.abstract import isIPAddress
+from twisted.internet.abstract import _LogOwner, isIPAddress
 from twisted.internet.tcp import _SocketCloser, Connector as TCPConnector
+from twisted.internet.tcp import _AbortingMixin
 from twisted.python import log, failure, reflect, util
 
 from twisted.internet.iocpreactor import iocpsupport as _iocp, abstract
@@ -33,8 +34,7 @@ connectExErrors = {
         ERROR_NETWORK_UNREACHABLE: errno.WSAENETUNREACH,
         }
 
-
-class Connection(abstract.FileHandle, _SocketCloser):
+class Connection(abstract.FileHandle, _SocketCloser, _AbortingMixin):
     """
     @ivar TLS: C{False} to indicate the connection is in normal TCP mode,
         C{True} to indicate that TLS has been started and that operations must
@@ -44,6 +44,7 @@ class Connection(abstract.FileHandle, _SocketCloser):
                interfaces.ISystemHandle)
 
     TLS = False
+
 
     def __init__(self, sock, proto, reactor=None):
         abstract.FileHandle.__init__(self, reactor)
@@ -102,8 +103,12 @@ class Connection(abstract.FileHandle, _SocketCloser):
 
 
     def connectionLost(self, reason):
+        if self.disconnected:
+            return
         abstract.FileHandle.connectionLost(self, reason)
-        self._closeSocket()
+        isClean = (reason is None or
+                   not reason.check(error.ConnectionAborted))
+        self._closeSocket(isClean)
         protocol = self.protocol
         del self.protocol
         del self.socket
@@ -248,7 +253,7 @@ class Client(Connection):
             return
 
         try:
-            self._closeSocket()
+            self._closeSocket(True)
         except AttributeError:
             pass
         else:
@@ -272,9 +277,9 @@ class Client(Connection):
             self.failIfNotConnected(error.getConnectError((rc,
                                     errno.errorcode.get(rc, 'Unknown error'))))
         else:
-            self.socket.setsockopt(socket.SOL_SOCKET,
-                                   SO_UPDATE_CONNECT_CONTEXT,
-                                   struct.pack('I', self.socket.fileno()))
+            self.socket.setsockopt(
+                socket.SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT,
+                struct.pack('P', self.socket.fileno()))
             self.protocol = self.connector.buildProtocol(self.getPeer())
             self.connected = True
             logPrefix = self._getLogPrefix(self.protocol)
@@ -398,7 +403,7 @@ class Connector(TCPConnector):
 
 
 
-class Port(_SocketCloser):
+class Port(_SocketCloser, _LogOwner):
     implements(interfaces.IListeningPort)
 
     connected = False
@@ -413,6 +418,11 @@ class Port(_SocketCloser):
     # value when we are actually listening.
     _realPortNumber = None
 
+    # A string describing the connections which will be created by this port.
+    # Normally this is C{"TCP"}, since this is a TCP port, but when the TLS
+    # implementation re-uses this class it overrides the value with C{"TLS"}.
+    # Only used for logging.
+    _type = 'TCP'
 
     def __init__(self, port, factory, backlog=50, interface='', reactor=None):
         self.port = port
@@ -447,7 +457,7 @@ class Port(_SocketCloser):
         # reflect what the OS actually assigned us.
         self._realPortNumber = skt.getsockname()[1]
 
-        log.msg("%s starting on %s" % (self.factory.__class__,
+        log.msg("%s starting on %s" % (self._getLogPrefix(self.factory),
                                        self._realPortNumber))
 
         self.factory.doStart()
@@ -481,7 +491,7 @@ class Port(_SocketCloser):
         """
         Log message for closing port
         """
-        log.msg('(TCP Port %s Closed)' % (self._realPortNumber,))
+        log.msg('(%s Port %s Closed)' % (self._type, self._realPortNumber))
 
 
     def connectionLost(self, reason):
@@ -498,7 +508,7 @@ class Port(_SocketCloser):
         self.disconnected = True
         self.reactor.removeActiveHandle(self)
         self.connected = False
-        self._closeSocket()
+        self._closeSocket(True)
         del self.socket
         del self.getFileHandle
 
@@ -549,8 +559,9 @@ class Port(_SocketCloser):
                     (errno.errorcode.get(rc, 'unknown error'), rc))
             return False
         else:
-            evt.newskt.setsockopt(socket.SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
-                                  struct.pack('I', self.socket.fileno()))
+            evt.newskt.setsockopt(
+                socket.SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
+                struct.pack('P', self.socket.fileno()))
             family, lAddr, rAddr = _iocp.get_accept_addrs(evt.newskt.fileno(),
                                                           evt.buff)
             assert family == self.addressFamily

@@ -5,8 +5,6 @@
 
 """
 Support for generic select()able objects.
-
-Maintainer: Itamar Shtull-Trauring
 """
 
 from zope.interface import implements
@@ -165,6 +163,7 @@ class FileDescriptor(_ConsumerMixin, _LogOwner):
         self._tempDataBuffer = [] # will be added to dataBuffer in doWrite
         self._tempDataLen = 0
 
+
     def connectionLost(self, reason):
         """The connection was lost.
 
@@ -175,7 +174,6 @@ class FileDescriptor(_ConsumerMixin, _LogOwner):
 
         Clean up state here, but make sure to call back up to FileDescriptor.
         """
-
         self.disconnected = 1
         self.connected = 0
         if self.producer is not None:
@@ -261,9 +259,12 @@ class FileDescriptor(_ConsumerMixin, _LogOwner):
                 # so.
                 return self._postLoseConnection()
             elif self._writeDisconnecting:
-                # I was previously asked to to half-close the connection.
-                result = self._closeWriteConnection()
+                # I was previously asked to half-close the connection.  We
+                # set _writeDisconnected before calling handler, in case the
+                # handler calls loseConnection(), which will want to check for
+                # this attribute.
                 self._writeDisconnected = True
+                result = self._closeWriteConnection()
                 return result
         return result
 
@@ -326,6 +327,9 @@ class FileDescriptor(_ConsumerMixin, _LogOwner):
         streaming producer is registered, it will be paused until the buffered
         data is written to the underlying file descriptor.
         """
+        for i in iovec:
+            if isinstance(i, unicode): # no, really, I mean it
+                raise TypeError("Data must not be unicode")
         if not self.connected or not iovec or self._writeDisconnected:
             return
         self._tempDataBuffer.extend(iovec)

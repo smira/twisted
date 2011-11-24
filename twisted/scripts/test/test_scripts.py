@@ -15,6 +15,7 @@ from subprocess import PIPE, Popen
 from twisted.trial.unittest import SkipTest, TestCase
 from twisted.python.modules import getModule
 from twisted.python.filepath import FilePath
+from twisted.python.test.test_shellcomp import ZshScriptTestMixin
 
 
 class ScriptTestsMixin:
@@ -58,10 +59,6 @@ class ScriptTests(TestCase, ScriptTestsMixin):
     """
     Tests for the core scripts.
     """
-    def test_mktap(self):
-        self.scriptTest("mktap")
-
-
     def test_twistd(self):
         self.scriptTest("twistd")
 
@@ -132,3 +129,35 @@ class ScriptTests(TestCase, ScriptTestsMixin):
 
     def test_tapconvert(self):
         self.scriptTest("tapconvert")
+
+
+    def test_deprecatedTkunzip(self):
+        """
+        The entire L{twisted.scripts.tkunzip} module, part of the old Windows
+        installer tool chain, is deprecated.
+        """
+        from twisted.scripts import tkunzip
+        warnings = self.flushWarnings(
+            offendingFunctions=[self.test_deprecatedTkunzip])
+        self.assertEqual(DeprecationWarning, warnings[0]['category'])
+        self.assertEqual(
+            "twisted.scripts.tkunzip was deprecated in Twisted 11.1.0: "
+            "Seek unzipping software outside of Twisted.",
+            warnings[0]['message'])
+        self.assertEqual(1, len(warnings))
+
+
+
+class ZshIntegrationTestCase(TestCase, ZshScriptTestMixin):
+    """
+    Test that zsh completion functions are generated without error
+    """
+    generateFor = [('twistd', 'twisted.scripts.twistd.ServerOptions'),
+                   ('trial', 'twisted.scripts.trial.Options'),
+                   ('pyhtmlizer', 'twisted.scripts.htmlizer.Options'),
+                   ('tap2rpm', 'twisted.scripts.tap2rpm.MyOptions'),
+                   ('tap2deb', 'twisted.scripts.tap2deb.MyOptions'),
+                   ('tapconvert', 'twisted.scripts.tapconvert.ConvertOptions'),
+                   ('manhole', 'twisted.scripts.manhole.MyOptions')
+                   ]
+
