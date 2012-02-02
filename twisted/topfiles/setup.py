@@ -28,7 +28,7 @@ extensions = [
 
     Extension('twisted.internet.cdefer',
               ['twisted/internet/cdefer/cdefer.c'],
-              condition=lambda _: _isCPython),
+              condition=lambda _: _isCPython and int(os.environ.get('TWISTED_BUILD_CDEFER', 1))),
 
     Extension("twisted.python._epoll",
               ["twisted/python/_epoll.c"],
