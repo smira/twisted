@@ -72,9 +72,9 @@ class ThreadedResolverTests(TestCase):
         resolvedTo = []
         def fakeGetHostByName(name):
             lookedUp.append(name)
-            return ip
+            return (name, [], [ip])
 
-        self.patch(socket, 'gethostbyname', fakeGetHostByName)
+        self.patch(socket, 'gethostbyname_ex', fakeGetHostByName)
 
         resolver = ThreadedResolver(reactor)
         d = resolver.getHostByName(name, (timeout,))
@@ -103,7 +103,7 @@ class ThreadedResolverTests(TestCase):
         def fakeGetHostByName(name):
             raise IOError("ENOBUFS (this is a funny joke)")
 
-        self.patch(socket, 'gethostbyname', fakeGetHostByName)
+        self.patch(socket, 'gethostbyname_ex', fakeGetHostByName)
 
         failedWith = []
         resolver = ThreadedResolver(reactor)
@@ -135,7 +135,7 @@ class ThreadedResolverTests(TestCase):
         def fakeGetHostByName(name):
             raise result.get()
 
-        self.patch(socket, 'gethostbyname', fakeGetHostByName)
+        self.patch(socket, 'gethostbyname_ex', fakeGetHostByName)
 
         failedWith = []
         resolver = ThreadedResolver(reactor)
@@ -152,6 +152,52 @@ class ThreadedResolverTests(TestCase):
         # an exception.  Nobody cares, though.
         result.put(IOError("The I/O was errorful"))
 
+    def test_real(self):
+        name = "ya.ru"
+        timeout = 30
+
+        reactor = FakeReactor()
+        self.addCleanup(reactor._stop)
+
+        resolvedTo = []
+        resolver = ThreadedResolver(reactor)
+        d = resolver.getHostByName(name, (timeout,))
+        d.addCallback(resolvedTo.append)
+
+        reactor._runThreadCalls()
+
+        self.assertTrue(resolvedTo[0].startswith('77.') or
+                        resolvedTo[0].startswith('87.') or
+                        resolvedTo[0].startswith('93.') or
+                        resolvedTo[0].startswith('213.'))
+
+        # Make sure that any timeout-related stuff gets cleaned up.
+        reactor._clock.advance(timeout + 1)
+        self.assertEqual(reactor._clock.calls, [])
+
+    def test_real_all(self):
+        name = "ya.ru"
+        timeout = 30
+
+        reactor = FakeReactor()
+        self.addCleanup(reactor._stop)
+
+        resolvedTo = []
+        resolver = ThreadedResolver(reactor)
+        d = resolver.getAllHostsByName(name, (timeout,))
+        d.addCallback(resolvedTo.append)
+
+        reactor._runThreadCalls()
+
+        for ip in resolvedTo[0]:
+            self.assertTrue(ip.startswith('77.') or
+                            ip.startswith('87.') or
+                            ip.startswith('93.') or
+                            ip.startswith('213.'))
+
+        # Make sure that any timeout-related stuff gets cleaned up.
+        reactor._clock.advance(timeout + 1)
+        self.assertEqual(reactor._clock.calls, [])
 
 
 class DelayedCallTests(TestCase):

@@ -250,7 +250,7 @@ class ThreadedResolver(object):
                 userDeferred.callback(result)
 
 
-    def getHostByName(self, name, timeout = (1, 3, 11, 45)):
+    def getAllHostsByName(self, name, timeout = (1, 3, 11, 45)):
         """
         See L{twisted.internet.interfaces.IResolverSimple.getHostByName}.
 
@@ -265,13 +265,15 @@ class ThreadedResolver(object):
         userDeferred = defer.Deferred()
         lookupDeferred = threads.deferToThreadPool(
             self.reactor, self.reactor.getThreadPool(),
-            socket.gethostbyname, name)
+            socket.gethostbyname_ex, name).addCallback(lambda res: sorted(res[2]))
         cancelCall = self.reactor.callLater(
             timeoutDelay, self._cleanup, name, lookupDeferred)
         self._runningQueries[lookupDeferred] = (userDeferred, cancelCall)
         lookupDeferred.addBoth(self._checkTimeout, name, lookupDeferred)
         return userDeferred
 
+    def getHostByName(self, name, timeout = (1, 3, 11, 45)):
+        return self.getAllHostsByName(name, timeout).addCallback(lambda res: res[0])
 
 
 class BlockingResolver:
@@ -279,7 +281,7 @@ class BlockingResolver:
 
     def getHostByName(self, name, timeout = (1, 3, 11, 45)):
         try:
-            address = socket.gethostbyname(name)
+            address = sorted(socket.gethostbyname_ex(name)[2])[0]
         except socket.error:
             msg = "address %r not found" % (name,)
             err = error.DNSLookupError(msg)
