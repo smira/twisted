@@ -209,12 +209,12 @@ class DelayedCall(styles.Ephemeral):
 class ThreadedResolver(object):
     """
     L{ThreadedResolver} uses a reactor, a threadpool, and
-    L{socket.gethostbyname} to perform name lookups without blocking the
+    L{socket.gethostbyname_ex} to perform name lookups without blocking the
     reactor thread.  It also supports timeouts indepedently from whatever
-    timeout logic L{socket.gethostbyname} might have.
+    timeout logic L{socket.gethostbyname_ex} might have.
 
     @ivar reactor: The reactor the threadpool of which will be used to call
-        L{socket.gethostbyname} and the I/O thread of which the result will be
+        L{socket.gethostbyname_ex} and the I/O thread of which the result will be
         delivered.
     """
     implements(IResolverSimple)
@@ -252,11 +252,7 @@ class ThreadedResolver(object):
 
     def getAllHostsByName(self, name, timeout = (1, 3, 11, 45)):
         """
-        See L{twisted.internet.interfaces.IResolverSimple.getHostByName}.
-
-        Note that the elements of C{timeout} are summed and the result is used
-        as a timeout for the lookup.  Any intermediate timeout or retry logic
-        is left up to the platform via L{socket.gethostbyname}.
+        Similar to getHostByName, but returns all IPs instead of one.
         """
         if timeout:
             timeoutDelay = sum(timeout)
@@ -273,6 +269,13 @@ class ThreadedResolver(object):
         return userDeferred
 
     def getHostByName(self, name, timeout = (1, 3, 11, 45)):
+        """
+        See L{twisted.internet.interfaces.IResolverSimple.getHostByName}.
+
+        Note that the elements of C{timeout} are summed and the result is used
+        as a timeout for the lookup.  Any intermediate timeout or retry logic
+        is left up to the platform via L{socket.gethostbyname_ex}.
+        """
         return self.getAllHostsByName(name, timeout).addCallback(lambda res: res[0])
 
 
