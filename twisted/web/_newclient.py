@@ -161,6 +161,14 @@ class ResponseFailed(_WrapperException):
         self.response = response
 
 
+
+class ResponseNeverReceived(ResponseFailed):
+    """
+    A L{ResponseFailed} that knows no response bytes at all have been received.
+    """
+
+
+
 class RequestNotSent(Exception):
     """
     L{RequestNotSent} indicates that an attempt was made to issue a request but
@@ -347,6 +355,8 @@ class HTTPClientParser(HTTPParser):
     @ivar _responseDeferred: A L{Deferred} which will be called back with the
         response when all headers in the response have been received.
         Thereafter, C{None}.
+
+    @ivar _everReceivedData: C{True} if any bytes have been received.
     """
     NO_BODY_CODES = set([NO_CONTENT, NOT_MODIFIED])
 
@@ -360,6 +370,15 @@ class HTTPClientParser(HTTPParser):
         self.request = request
         self.finisher = finisher
         self._responseDeferred = Deferred()
+        self._everReceivedData = False
+
+
+    def dataReceived(self, data):
+        """
+        Override so that we know if any response has been received.
+        """
+        self._everReceivedData = True
+        HTTPParser.dataReceived(self, data)
 
 
     def parseVersion(self, strversion):
@@ -513,7 +532,11 @@ class HTTPClientParser(HTTPParser):
                 # making things difficult.
                 log.err()
         elif self.state != DONE:
-            self._responseDeferred.errback(Failure(ResponseFailed([reason])))
+            if self._everReceivedData:
+                exceptionClass = ResponseFailed
+            else:
+                exceptionClass = ResponseNeverReceived
+            self._responseDeferred.errback(Failure(exceptionClass([reason])))
             del self._responseDeferred
 
 
@@ -538,12 +561,16 @@ class Request:
 
     @ivar bodyProducer: C{None} or an L{IBodyProducer} provider which
         produces the content body to send to the remote HTTP server.
+
+    @ivar persistent: Set to C{True} when you use HTTP persistent connection.
+    @type persistent: C{bool}
     """
-    def __init__(self, method, uri, headers, bodyProducer):
+    def __init__(self, method, uri, headers, bodyProducer, persistent=False):
         self.method = method
         self.uri = uri
         self.headers = headers
         self.bodyProducer = bodyProducer
+        self.persistent = persistent
 
 
     def _writeHeaders(self, transport, TEorCL):
@@ -557,7 +584,8 @@ class Request:
         requestLines = []
         requestLines.append(
             '%s %s HTTP/1.1\r\n' % (self.method, self.uri))
-        requestLines.append('Connection: close\r\n')
+        if not self.persistent:
+            requestLines.append('Connection: close\r\n')
         if TEorCL is not None:
             requestLines.append(TEorCL)
         for name, values in self.headers.getAllRawHeaders():
@@ -998,7 +1026,7 @@ class Response:
 
     def _bodyDataReceived_FINISHED(self, data):
         """
-        It is invalid for data to be delivered after the response bofdy has
+        It is invalid for data to be delivered after the response body has
         been delivered to a protocol.
         """
         raise RuntimeError("Cannot receive body data after protocol disconnected")
@@ -1216,9 +1244,26 @@ class HTTP11ClientProtocol(Protocol):
 
           - CONNECTION_LOST: The connection has been lost.
 
+    @ivar _abortDeferreds: A list of C{Deferred} instances that will fire when
+        the connection is lost.
     """
     _state = 'QUIESCENT'
     _parser = None
+    _finishedRequest = None
+    _currentRequest = None
+    _transportProxy = None
+    _responseDeferred = None
+
+
+    def __init__(self, quiescentCallback=lambda c: None):
+        self._quiescentCallback = quiescentCallback
+        self._abortDeferreds = []
+
+
+    @property
+    def state(self):
+        return self._state
+
 
     def request(self, request):
         """
@@ -1258,10 +1303,6 @@ class HTTP11ClientProtocol(Protocol):
         def cbRequestWrotten(ignored):
             if self._state == 'TRANSMITTING':
                 self._state = 'WAITING'
-                # XXX We're stuck in WAITING until we lose the connection now.
-                # This will be wrong when persistent connections are supported.
-                # See #3420 for persistent connections.
-
                 self._responseDeferred.chainDeferred(self._finishedRequest)
 
         def ebRequestWriting(err):
@@ -1288,18 +1329,16 @@ class HTTP11ClientProtocol(Protocol):
             the L{HTTPClientParser} which were not part of the response it
             was parsing.
         """
-        # XXX this is because Connection: close is hard-coded above, probably
-        # will want to change that at some point.  Either the client or the
-        # server can control this.
+    _finishResponse = makeStatefulDispatcher('finishResponse', _finishResponse)
 
-        # XXX If the connection isn't being closed at this point, it's
-        # important to make sure the transport isn't paused (after _giveUp,
-        # or inside it, or something - after the parser can no longer touch
-        # the transport)
 
-        # For both of the above, see #3420 for persistent connections.
-
-        if self._state == 'TRANSMITTING':
+    def _finishResponse_WAITING(self, rest):
+        # Currently the rest parameter is ignored. Don't forget to use it if
+        # we ever add support for pipelining. And maybe check what trailers
+        # mean.
+        if self._state == 'WAITING':
+            self._state = 'QUIESCENT'
+        else:
             # The server sent the entire response before we could send the
             # whole request.  That sucks.  Oh well.  Fire the request()
             # Deferred with the response.  But first, make sure that if the
@@ -1308,7 +1347,31 @@ class HTTP11ClientProtocol(Protocol):
             self._state = 'TRANSMITTING_AFTER_RECEIVING_RESPONSE'
             self._responseDeferred.chainDeferred(self._finishedRequest)
 
-        self._giveUp(Failure(ConnectionDone("synthetic!")))
+        # This will happen if we're being called due to connection being lost;
+        # if so, no need to disconnect parser again, or to call
+        # _quiescentCallback.
+        if self._parser is None:
+            return
+
+        reason = ConnectionDone("synthetic!")
+        connHeaders = self._parser.connHeaders.getRawHeaders('connection', ())
+        if (('close' in connHeaders) or self._state != "QUIESCENT" or
+            not self._currentRequest.persistent):
+            self._giveUp(Failure(reason))
+        else:
+            # We call the quiescent callback first, to ensure connection gets
+            # added back to connection pool before we finish the request.
+            try:
+                self._quiescentCallback(self)
+            except:
+                # If callback throws exception, just log it and disconnect;
+                # keeping persistent connections around is an optimisation:
+                log.err()
+                self.transport.loseConnection()
+            self._disconnectParser(reason)
+
+
+    _finishResponse_TRANSMITTING = _finishResponse_WAITING
 
 
     def _disconnectParser(self, reason):
@@ -1321,13 +1384,16 @@ class HTTP11ClientProtocol(Protocol):
         if self._parser is not None:
             parser = self._parser
             self._parser = None
+            self._currentRequest = None
+            self._finishedRequest = None
+            self._responseDeferred = None
 
             # The parser is no longer allowed to do anything to the real
             # transport.  Stop proxying from the parser's transport to the real
             # transport before telling the parser it's done so that it can't do
             # anything.
             self._transportProxy._stopProxying()
-
+            self._transportProxy = None
             parser.connectionLost(reason)
 
 
@@ -1417,6 +1483,9 @@ class HTTP11ClientProtocol(Protocol):
         """
         self._disconnectParser(Failure(ConnectionAborted()))
         self._state = 'CONNECTION_LOST'
+        for d in self._abortDeferreds:
+            d.callback(None)
+        self._abortDeferreds = []
 
 
     def abort(self):
@@ -1424,5 +1493,10 @@ class HTTP11ClientProtocol(Protocol):
         Close the connection and cause all outstanding L{request} L{Deferred}s
         to fire with an error.
         """
+        if self._state == "CONNECTION_LOST":
+            return succeed(None)
         self.transport.loseConnection()
         self._state = 'ABORTING'
+        d = Deferred()
+        self._abortDeferreds.append(d)
+        return d

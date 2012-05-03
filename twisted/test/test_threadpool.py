@@ -7,7 +7,7 @@ Tests for L{twisted.python.threadpool}
 
 import pickle, time, weakref, gc, threading
 
-from twisted.trial import unittest, util
+from twisted.trial import unittest
 from twisted.python import threadpool, threadable, failure, context
 from twisted.internet import reactor
 from twisted.internet.defer import Deferred
@@ -249,19 +249,6 @@ class ThreadPoolTestCase(unittest.TestCase):
                                     (actor.failures,))
 
 
-    def test_dispatch(self):
-        """
-        Call C{_threadpoolTest} with C{dispatch}.
-        """
-        return self._threadpoolTest(
-            lambda tp, actor: tp.dispatch(actor, actor.run))
-
-    test_dispatch.suppress = [util.suppress(
-                message="dispatch\(\) is deprecated since Twisted 8.0, "
-                        "use callInThread\(\) instead",
-                category=DeprecationWarning)]
-
-
     def test_callInThread(self):
         """
         Call C{_threadpoolTest} with C{callInThread}.
@@ -471,44 +458,6 @@ class ThreadPoolTestCase(unittest.TestCase):
             tp.stop()
 
 
-    def test_dispatchDeprecation(self):
-        """
-        Test for the deprecation of the dispatch method.
-        """
-        tp = threadpool.ThreadPool()
-        tp.start()
-        self.addCleanup(tp.stop)
-
-        def cb():
-            return tp.dispatch(None, lambda: None)
-
-        self.assertWarns(DeprecationWarning,
-                         "dispatch() is deprecated since Twisted 8.0, "
-                         "use callInThread() instead",
-                         __file__, cb)
-
-
-    def test_dispatchWithCallbackDeprecation(self):
-        """
-        Test for the deprecation of the dispatchWithCallback method.
-        """
-        tp = threadpool.ThreadPool()
-        tp.start()
-        self.addCleanup(tp.stop)
-
-        def cb():
-            return tp.dispatchWithCallback(
-                None,
-                lambda x: None,
-                lambda x: None,
-                lambda: None)
-
-        self.assertWarns(DeprecationWarning,
-                     "dispatchWithCallback() is deprecated since Twisted 8.0, "
-                     "use twisted.internet.threads.deferToThread() instead.",
-                     __file__, cb)
-
-
 
 class RaceConditionTestCase(unittest.TestCase):
     def setUp(self):
@@ -575,25 +524,3 @@ class RaceConditionTestCase(unittest.TestCase):
         loopDeferred.addCallback(cbLoop)
         submit(10)
         return loopDeferred
-
-
-
-class ThreadSafeListDeprecationTestCase(unittest.TestCase):
-    """
-    Test deprecation of threadpool.ThreadSafeList in twisted.python.threadpool
-    """
-
-    def test_threadSafeList(self):
-        """
-        Test deprecation of L{threadpool.ThreadSafeList}.
-        """
-        threadpool.ThreadSafeList()
-
-        warningsShown = self.flushWarnings([self.test_threadSafeList])
-        self.assertEqual(len(warningsShown), 1)
-        self.assertIdentical(warningsShown[0]['category'], DeprecationWarning)
-        self.assertEqual(
-            warningsShown[0]['message'],
-            "twisted.python.threadpool.ThreadSafeList was deprecated in "
-            "Twisted 10.1.0: This was an internal implementation detail of "
-            "support for Jython 2.1, which is now obsolete.")

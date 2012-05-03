@@ -17,7 +17,7 @@ from twisted.web.error import UnfilledSlot, UnsupportedType, FlattenerError
 
 from twisted.web.iweb import IRenderable
 from twisted.web._stan import (
-    Tag, slot, voidElements, Comment, CDATA)
+    Tag, slot, voidElements, Comment, CDATA, CharRef)
 
 
 
@@ -147,9 +147,7 @@ def _flattenElement(request, root, slotData, renderFactory, inAttribute):
             return
 
         if not root.tagName:
-            for element in _flattenElement(request, root.children, slotData,
-                                    renderFactory, False):
-                yield element
+            yield _flattenElement(request, root.children, slotData, renderFactory, False)
             return
 
         yield '<'
@@ -162,15 +160,11 @@ def _flattenElement(request, root, slotData, renderFactory, inAttribute):
             if isinstance(k, unicode):
                 k = k.encode('ascii')
             yield ' ' + k + '="'
-            for element in _flattenElement(request, v, slotData,
-                                    renderFactory, True):
-                yield element
+            yield _flattenElement(request, v, slotData, renderFactory, True)
             yield '"'
         if root.children or tagName not in voidElements:
             yield '>'
-            for element in _flattenElement(request, root.children,
-                                    slotData, renderFactory, False):
-                yield element
+            yield _flattenElement(request, root.children, slotData, renderFactory, False)
             yield '</' + tagName + '>'
         else:
             yield ' />'
@@ -179,6 +173,8 @@ def _flattenElement(request, root, slotData, renderFactory, inAttribute):
         for element in root:
             yield _flattenElement(request, element, slotData, renderFactory,
                     inAttribute)
+    elif isinstance(root, CharRef):
+        yield '&#%d;' % (root.ordinal,)
     elif isinstance(root, Deferred):
         yield root.addCallback(
             lambda result: (result, _flattenElement(request, result, slotData,

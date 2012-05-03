@@ -538,6 +538,11 @@ class TLSMemoryBIOProtocol(ProtocolWrapper):
 
 
     def registerProducer(self, producer, streaming):
+        # If we've already disconnected, nothing to do here:
+        if self._lostTLSConnection:
+            producer.stopProducing()
+            return
+
         # If we received a non-streaming producer, wrap it so it becomes a
         # streaming producer:
         if not streaming:
@@ -578,11 +583,15 @@ class TLSMemoryBIOFactory(WrappingFactory):
     protocol = TLSMemoryBIOProtocol
 
     noisy = False  # disable unnecessary logging.
-    
+
     def __init__(self, contextFactory, isClient, wrappedFactory):
         WrappingFactory.__init__(self, wrappedFactory)
         self._contextFactory = contextFactory
         self._isClient = isClient
+
+        # Force some parameter checking in pyOpenSSL.  It's better to fail now
+        # than after we've set up the transport.
+        contextFactory.getContext()
 
 
     def logPrefix(self):

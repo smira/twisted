@@ -11,22 +11,25 @@ parsed by the L{clientFromString} and L{serverFromString} functions.
 @since: 10.1
 """
 
+import os, socket
+
 from zope.interface import implements, directlyProvides
 import warnings
 
-from twisted.internet import interfaces, defer, error
+from twisted.internet import interfaces, defer, error, fdesc
 from twisted.internet.protocol import ClientFactory, Protocol
-from twisted.plugin import getPlugins
+from twisted.plugin import IPlugin, getPlugins
 from twisted.internet.interfaces import IStreamServerEndpointStringParser
 from twisted.internet.interfaces import IStreamClientEndpointStringParser
 from twisted.python.filepath import FilePath
-
+from twisted.python.systemd import ListenFDs
 
 
 __all__ = ["clientFromString", "serverFromString",
            "TCP4ServerEndpoint", "TCP4ClientEndpoint",
            "UNIXServerEndpoint", "UNIXClientEndpoint",
-           "SSL4ServerEndpoint", "SSL4ClientEndpoint"]
+           "SSL4ServerEndpoint", "SSL4ClientEndpoint",
+           "AdoptedStreamServerEndpoint"]
 
 
 class _WrappingProtocol(Protocol):
@@ -52,9 +55,10 @@ class _WrappingProtocol(Protocol):
         self._connectedDeferred = connectedDeferred
         self._wrappedProtocol = wrappedProtocol
 
-        if interfaces.IHalfCloseableProtocol.providedBy(
-            self._wrappedProtocol):
-            directlyProvides(self, interfaces.IHalfCloseableProtocol)
+        for iface in [interfaces.IHalfCloseableProtocol,
+                      interfaces.IFileDescriptorReceiver]:
+            if iface.providedBy(self._wrappedProtocol):
+                directlyProvides(self, iface)
 
 
     def logPrefix(self):
@@ -80,6 +84,13 @@ class _WrappingProtocol(Protocol):
         Proxy C{dataReceived} calls to our C{self._wrappedProtocol}
         """
         return self._wrappedProtocol.dataReceived(data)
+
+
+    def fileDescriptorReceived(self, descriptor):
+        """
+        Proxy C{fileDescriptorReceived} calls to our C{self._wrappedProtocol}
+        """
+        return self._wrappedProtocol.fileDescriptorReceived(descriptor)
 
 
     def connectionLost(self, reason):
@@ -110,25 +121,58 @@ class _WrappingFactory(ClientFactory):
     """
     Wrap a factory in order to wrap the protocols it builds.
 
-    @ivar _wrappedFactory:  A provider of I{IProtocolFactory} whose
-        buildProtocol method will be called and whose resulting protocol
-        will be wrapped.
+    @ivar _wrappedFactory: A provider of I{IProtocolFactory} whose buildProtocol
+        method will be called and whose resulting protocol will be wrapped.
 
     @ivar _onConnection: An L{Deferred} that fires when the protocol is
         connected
+
+    @ivar _connector: A L{connector <twisted.internet.interfaces.IConnector>}
+        that is managing the current or previous connection attempt.
     """
     protocol = _WrappingProtocol
 
-    def __init__(self, wrappedFactory, canceller):
+    def __init__(self, wrappedFactory):
         """
         @param wrappedFactory: A provider of I{IProtocolFactory} whose
             buildProtocol method will be called and whose resulting protocol
             will be wrapped.
-        @param canceller: An object that will be called to cancel the
-            L{self._onConnection} L{Deferred}
         """
         self._wrappedFactory = wrappedFactory
-        self._onConnection = defer.Deferred(canceller=canceller)
+        self._onConnection = defer.Deferred(canceller=self._canceller)
+
+
+    def startedConnecting(self, connector):
+        """
+        A connection attempt was started.  Remember the connector which started
+        said attempt, for use later.
+        """
+        self._connector = connector
+
+
+    def _canceller(self, deferred):
+        """
+        The outgoing connection attempt was cancelled.  Fail that L{Deferred}
+        with a L{error.ConnectingCancelledError}.
+
+        @param deferred: The L{Deferred <defer.Deferred>} that was cancelled;
+            should be the same as C{self._onConnection}.
+        @type deferred: L{Deferred <defer.Deferred>}
+
+        @note: This relies on startedConnecting having been called, so it may
+            seem as though there's a race condition where C{_connector} may not
+            have been set.  However, using public APIs, this condition is
+            impossible to catch, because a connection API
+            (C{connectTCP}/C{SSL}/C{UNIX}) is always invoked before a
+            L{_WrappingFactory}'s L{Deferred <defer.Deferred>} is returned to
+            C{connect()}'s caller.
+
+        @return: C{None}
+        """
+        deferred.errback(
+            error.ConnectingCancelledError(
+                self._connector.getDestination()))
+        self._connector.stopConnecting()
 
 
     def doStart(self):
@@ -165,7 +209,8 @@ class _WrappingFactory(ClientFactory):
         Errback the C{self._onConnection} L{Deferred} when the
         client connection fails.
         """
-        self._onConnection.errback(reason)
+        if not self._onConnection.called:
+            self._onConnection.errback(reason)
 
 
 
@@ -255,14 +300,9 @@ class TCP4ClientEndpoint(object):
         """
         Implement L{IStreamClientEndpoint.connect} to connect via TCP.
         """
-        def _canceller(deferred):
-            connector.stopConnecting()
-            deferred.errback(
-                error.ConnectingCancelledError(connector.getDestination()))
-
         try:
-            wf = _WrappingFactory(protocolFactory, _canceller)
-            connector = self._reactor.connectTCP(
+            wf = _WrappingFactory(protocolFactory)
+            self._reactor.connectTCP(
                 self._host, self._port, wf,
                 timeout=self._timeout, bindAddress=self._bindAddress)
             return wf._onConnection
@@ -379,14 +419,9 @@ class SSL4ClientEndpoint(object):
         Implement L{IStreamClientEndpoint.connect} to connect with SSL over
         TCP.
         """
-        def _canceller(deferred):
-            connector.stopConnecting()
-            deferred.errback(
-                error.ConnectingCancelledError(connector.getDestination()))
-
         try:
-            wf = _WrappingFactory(protocolFactory, _canceller)
-            connector = self._reactor.connectSSL(
+            wf = _WrappingFactory(protocolFactory)
+            self._reactor.connectSSL(
                 self._host, self._port, wf, self._sslContextFactory,
                 timeout=self._timeout, bindAddress=self._bindAddress)
             return wf._onConnection
@@ -480,20 +515,62 @@ class UNIXClientEndpoint(object):
         Implement L{IStreamClientEndpoint.connect} to connect via a
         UNIX Socket
         """
-        def _canceller(deferred):
-            connector.stopConnecting()
-            deferred.errback(
-                error.ConnectingCancelledError(connector.getDestination()))
-
         try:
-            wf = _WrappingFactory(protocolFactory, _canceller)
-            connector = self._reactor.connectUNIX(
+            wf = _WrappingFactory(protocolFactory)
+            self._reactor.connectUNIX(
                 self._path, wf,
                 timeout=self._timeout,
                 checkPID=self._checkPID)
             return wf._onConnection
         except:
             return defer.fail()
+
+
+
+class AdoptedStreamServerEndpoint(object):
+    """
+    An endpoint for listening on a file descriptor initialized outside of
+    Twisted.
+
+    @ivar _used: A C{bool} indicating whether this endpoint has been used to
+        listen with a factory yet.  C{True} if so.
+    """
+    _close = os.close
+    _setNonBlocking = staticmethod(fdesc.setNonBlocking)
+
+    def __init__(self, reactor, fileno, addressFamily):
+        """
+        @param reactor: An L{IReactorSocket} provider.
+
+        @param fileno: An integer file descriptor corresponding to a listening
+            I{SOCK_STREAM} socket.
+
+        @param addressFamily: The address family of the socket given by
+            C{fileno}.
+        """
+        self.reactor = reactor
+        self.fileno = fileno
+        self.addressFamily = addressFamily
+        self._used = False
+
+
+    def listen(self, factory):
+        """
+        Implement L{IStreamServerEndpoint.listen} to start listening on, and
+        then close, C{self._fileno}.
+        """
+        if self._used:
+            return defer.fail(error.AlreadyListened())
+        self._used = True
+
+        try:
+            self._setNonBlocking(self.fileno)
+            port = self.reactor.adoptStreamPort(
+                self.fileno, self.addressFamily, factory)
+            self._close(self.fileno)
+        except:
+            return defer.fail()
+        return defer.succeed(port)
 
 
 
@@ -601,9 +678,62 @@ def _parseSSL(factory, port, privateKey="server.pem", certKey=None,
     return ((int(port), factory, cf),
             {'interface': interface, 'backlog': int(backlog)})
 
+
+class _SystemdParser(object):
+    """
+    Stream server endpoint string parser for the I{systemd} endpoint type.
+
+    @ivar prefix: See L{IStreamClientEndpointStringParser.prefix}.
+
+    @ivar _sddaemon: A L{ListenFDs} instance used to translate an index into an
+        actual file descriptor.
+    """
+    implements(IPlugin, IStreamServerEndpointStringParser)
+
+    _sddaemon = ListenFDs.fromEnvironment()
+
+    prefix = "systemd"
+
+    def _parseServer(self, reactor, domain, index):
+        """
+        Internal parser function for L{_parseServer} to convert the string
+        arguments for a systemd server endpoint into structured arguments for
+        L{AdoptedStreamServerEndpoint}.
+
+        @param reactor: An L{IReactorSocket} provider.
+
+        @param domain: The domain (or address family) of the socket inherited
+            from systemd.  This is a string like C{"INET"} or C{"UNIX"}, ie the
+            name of an address family from the L{socket} module, without the
+            C{"AF_"} prefix.
+        @type domain: C{str}
+
+        @param index: An offset into the list of file descriptors inherited from
+            systemd.
+        @type index: C{str}
+
+        @return: A two-tuple of parsed positional arguments and parsed keyword
+            arguments (a tuple and a dictionary).  These can be used to
+            construct a L{AdoptedStreamServerEndpoint}.
+        """
+        index = int(index)
+        fileno = self._sddaemon.inheritedDescriptors()[index]
+        addressFamily = getattr(socket, 'AF_' + domain)
+        return AdoptedStreamServerEndpoint(reactor, fileno, addressFamily)
+
+
+    def parseStreamServer(self, reactor, *args, **kwargs):
+        # Delegate to another function with a sane signature.  This function has
+        # an insane signature to trick zope.interface into believing the
+        # interface is correctly implemented.
+        return self._parseServer(reactor, *args, **kwargs)
+
+
+
 _serverParsers = {"tcp": _parseTCP,
                   "unix": _parseUNIX,
-                  "ssl": _parseSSL}
+                  "ssl": _parseSSL,
+                  }
 
 _OP, _STRING = range(2)
 
@@ -728,7 +858,7 @@ def _parseServer(description, factory, default=None):
     parser = _serverParsers.get(endpointType)
     if parser is None:
         for plugin in getPlugins(IStreamServerEndpointStringParser):
-            if plugin.prefix == endpointType: 
+            if plugin.prefix == endpointType:
                 return (plugin, args[1:], kw)
         raise ValueError("Unknown endpoint type: '%s'" % (endpointType,))
     return (endpointType.upper(),) + parser(factory, *args[1:], **kw)
@@ -849,16 +979,32 @@ def quoteStringArgument(argument):
 
 
 
-def _parseClientTCP(**kwargs):
+def _parseClientTCP(*args, **kwargs):
     """
     Perform any argument value coercion necessary for TCP client parameters.
+
+    Valid positional arguments to this function are host and port.
 
     Valid keyword arguments to this function are all L{IReactorTCP.connectTCP}
     arguments.
 
     @return: The coerced values as a C{dict}.
     """
-    kwargs['port'] = int(kwargs['port'])
+
+    if len(args) == 2:
+        kwargs['port'] = int(args[1])
+        kwargs['host'] = args[0]
+    elif len(args) == 1:
+        if 'host' in kwargs:
+            kwargs['port'] = int(args[0])
+        else:
+            kwargs['host'] = args[0]
+
+    try:
+        kwargs['port'] = int(kwargs['port'])
+    except KeyError:
+        pass
+
     try:
         kwargs['timeout'] = int(kwargs['timeout'])
     except KeyError:
@@ -898,7 +1044,7 @@ def _loadCAsFromDir(directoryPath):
 
 
 
-def _parseClientSSL(**kwargs):
+def _parseClientSSL(*args, **kwargs):
     """
     Perform any argument value coercion necessary for SSL client parameters.
 
@@ -907,7 +1053,9 @@ def _parseClientSSL(**kwargs):
     of the certificate file) C{privateKey} (the path name of the private key
     associated with the certificate) are accepted and used to construct a
     context factory.
-    
+
+    Valid positional arguments to this function are host and port.
+
     @param caCertsDir: The one parameter which is not part of
         L{IReactorSSL.connectSSL}'s signature, this is a path name used to
         construct a list of certificate authority certificates.  The directory
@@ -919,7 +1067,7 @@ def _parseClientSSL(**kwargs):
     @return: The coerced values as a C{dict}.
     """
     from twisted.internet import ssl
-    kwargs = _parseClientTCP(**kwargs)
+    kwargs = _parseClientTCP(*args, **kwargs)
     certKey = kwargs.pop('certKey', None)
     privateKey = kwargs.pop('privateKey', None)
     caCertsDir = kwargs.pop('caCertsDir', None)
@@ -950,16 +1098,21 @@ def _parseClientSSL(**kwargs):
 
 
 
-def _parseClientUNIX(**kwargs):
+def _parseClientUNIX(*args, **kwargs):
     """
     Perform any argument value coercion necessary for UNIX client parameters.
 
     Valid keyword arguments to this function are all L{IReactorUNIX.connectUNIX}
-    arguments except for C{checkPID}.  Instead, C{lockfile} is accepted and has
-    the same meaning.
+    keyword arguments except for C{checkPID}.  Instead, C{lockfile} is accepted
+    and has the same meaning.  Also C{path} is used instead of C{address}.
+    
+    Valid positional arguments to this function are C{path}.
 
     @return: The coerced values as a C{dict}.
     """
+    if len(args) == 1:
+        kwargs['path'] = args[0]
+
     try:
         kwargs['checkPID'] = bool(int(kwargs.pop('lockfile')))
     except KeyError:
@@ -983,19 +1136,27 @@ def clientFromString(reactor, description):
     Construct a client endpoint from a description string.
 
     Client description strings are much like server description strings,
-    although they take all of their arguments as keywords, since even the
-    simplest client endpoint (plain TCP) requires at least 2 arguments (host
-    and port) to construct.
+    although they take all of their arguments as keywords, aside from host and
+    port.
 
     You can create a TCP client endpoint with the 'host' and 'port' arguments,
     like so::
 
         clientFromString(reactor, "tcp:host=www.example.com:port=80")
 
+    or, without specifying host and port keywords::
+
+        clientFromString(reactor, "tcp:www.example.com:80")
+
+    Or you can specify only one or the other, as in the following 2 examples::
+
+        clientFromString(reactor, "tcp:host=www.example.com:80")
+        clientFromString(reactor, "tcp:www.example.com:port=80")
+
     or an SSL client endpoint with those arguments, plus the arguments used by
     the server SSL, for a client certificate::
 
-        clientFromString(reactor, "ssl:host=web.example.com:port=443:"
+        clientFromString(reactor, "ssl:web.example.com:443:"
                                   "privateKey=foo.pem:certKey=foo.pem")
 
     to specify your certificate trust roots, you can identify a directory with
@@ -1003,6 +1164,17 @@ def clientFromString(reactor, description):
 
         clientFromString(reactor, "ssl:host=web.example.com:port=443:"
                                   "caCertsDir=/etc/ssl/certs")
+    
+    You can create a UNIX client endpoint with the 'path' argument and optional
+    'lockfile' and 'timeout' arguments::
+    
+        clientFromString(reactor, "unix:path=/var/foo/bar:lockfile=1:timeout=9")
+    
+    or, with the path as a positional argument with or without optional
+    arguments as in the following 2 examples::
+    
+        clientFromString(reactor, "unix:/var/foo/bar")
+        clientFromString(reactor, "unix:/var/foo/bar:lockfile=1:timeout=9")
 
     This function is also extensible; new endpoint types may be registered as
     L{IStreamClientEndpointStringParser} plugins.  See that interface for more

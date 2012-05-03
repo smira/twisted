@@ -15,6 +15,8 @@ from twisted.python.runtime import platform
 
 from twisted.trial import unittest
 
+from zope.interface.verify import verifyObject
+
 
 class AbstractFilePathTestCase(unittest.TestCase):
 
@@ -68,7 +70,8 @@ class AbstractFilePathTestCase(unittest.TestCase):
             ["a", "b", "c"])
 
     def test_segmentsFromNegative(self):
-        """Verify that segmentsFrom notices when the ancestor isn't an ancestor.
+        """
+        Verify that segmentsFrom notices when the ancestor isn't an ancestor.
         """
         self.assertRaises(
             ValueError,
@@ -103,7 +106,8 @@ class AbstractFilePathTestCase(unittest.TestCase):
 
 
     def test_validSubdir(self):
-        """Verify that a valid subdirectory will show up as a directory, but not as a
+        """
+        Verify that a valid subdirectory will show up as a directory, but not as a
         file, not as a symlink, and be listable.
         """
         sub1 = self.path.child('sub1')
@@ -273,7 +277,7 @@ class ListingCompatibilityTests(unittest.TestCase):
 
 def zipit(dirname, zfname):
     """
-    create a zipfile on zfname, containing the contents of dirname'
+    Create a zipfile on zfname, containing the contents of dirname'
     """
     zf = zipfile.ZipFile(zfname, "w")
     for root, ignored, files, in os.walk(dirname):
@@ -297,6 +301,14 @@ class ZipFilePathTestCase(AbstractFilePathTestCase):
         self.path = ZipArchive(self.cmn + '.zip')
         self.root = self.path
         self.all = [x.replace(self.cmn, self.cmn + '.zip') for x in self.all]
+
+
+    def test_verifyObject(self):
+        """
+        ZipPaths implement IFilePath.
+        """
+
+        self.assertTrue(verifyObject(filepath.IFilePath, self.path))
 
 
     def test_zipPathRepr(self):
@@ -643,6 +655,15 @@ class FilePathTestCase(AbstractFilePathTestCase):
     Test various L{FilePath} path manipulations.
     """
 
+
+    def test_verifyObject(self):
+        """
+        FilePaths implement IFilePath.
+        """
+
+        self.assertTrue(verifyObject(filepath.IFilePath, self.path))
+
+
     def test_chmod(self):
         """
         L{FilePath.chmod} modifies the permissions of
@@ -926,10 +947,11 @@ class FilePathTestCase(AbstractFilePathTestCase):
         self.assertRaises(filepath.InsecurePath, self.path.child, r"C:randomfile")
 
     if platform.getType() != 'win32':
-        testInsecureWin32.skip = "Consider yourself lucky."
+        testInsecureWin32.skip = "Test will run only on Windows."
 
     def testInsecureWin32Whacky(self):
-        """Windows has 'special' filenames like NUL and CON and COM1 and LPR
+        """
+        Windows has 'special' filenames like NUL and CON and COM1 and LPR
         and PRN and ... god knows what else.  They can be located anywhere in
         the filesystem.  For obvious reasons, we do not wish to normally permit
         access to these.
@@ -939,7 +961,7 @@ class FilePathTestCase(AbstractFilePathTestCase):
         self.assertRaises(filepath.InsecurePath, self.path.child, r"C:\CON")
 
     if platform.getType() != 'win32':
-        testInsecureWin32Whacky.skip = "Consider yourself lucky."
+        testInsecureWin32Whacky.skip = "Test will run only on Windows."
 
     def testComparison(self):
         self.assertEqual(filepath.FilePath('a'),
@@ -1558,8 +1580,8 @@ class FilePathTestCase(AbstractFilePathTestCase):
         test_statinfoNumbersAreValid.skip = True
         test_getPermissions_POSIX.skip = True
     else:
-        test_statinfoBitsNotImplementedInWindows.skip = True
-        test_getPermissions_Windows.skip = True
+        test_statinfoBitsNotImplementedInWindows.skip = "Test will run only on Windows."
+        test_getPermissions_Windows.skip = "Test will run only on Windows."
 
 
 

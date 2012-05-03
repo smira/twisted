@@ -2,11 +2,12 @@
 # See LICENSE for details.
 
 
-ctypedef int size_t
-ctypedef unsigned long HANDLE
-ctypedef unsigned long SOCKET
+# HANDLE and SOCKET are pointer-sized (they are 64 bit wide in 64-bit builds)
+ctypedef size_t HANDLE
+ctypedef size_t SOCKET
 ctypedef unsigned long DWORD
-ctypedef unsigned long ULONG_PTR
+# it's really a pointer, but we use it as an integer
+ctypedef size_t ULONG_PTR
 ctypedef int BOOL
 
 cdef extern from 'io.h':
@@ -48,29 +49,35 @@ cdef extern from 'python.h':
     void Py_XINCREF(object o)
     void Py_DECREF(object o)
     void Py_XDECREF(object o)
-    int PyObject_AsWriteBuffer(object obj, void **buffer, int *buffer_len) except -1
-    int PyObject_AsReadBuffer(object obj, void **buffer, int *buffer_len) except -1
+    int PyObject_AsWriteBuffer(object obj, void **buffer, Py_ssize_t *buffer_len) except -1
+    int PyObject_AsReadBuffer(object obj, void **buffer, Py_ssize_t *buffer_len) except -1
     object PyString_FromString(char *v)
-    object PyString_FromStringAndSize(char *v, int len)
-    object PyBuffer_New(int size)
+    object PyString_FromStringAndSize(char *v, Py_ssize_t len)
+    object PyBuffer_New(Py_ssize_t size)
     char *PyString_AsString(object obj) except NULL
     object PySequence_Fast(object o, char *m)
-#    object PySequence_Fast_GET_ITEM(object o, int i)
+#    object PySequence_Fast_GET_ITEM(object o, Py_ssize_t i)
     PyObject** PySequence_Fast_ITEMS(object o)
-    PyObject* PySequence_ITEM(	PyObject *o, int i)
-    int PySequence_Fast_GET_SIZE(object o)
+    PyObject* PySequence_ITEM(PyObject *o, Py_ssize_t i)
+    Py_ssize_t PySequence_Fast_GET_SIZE(object o)
 
 cdef extern from '':
     struct sockaddr:
-        int sa_family
+        unsigned short int sa_family
         char sa_data[0]
     cdef struct in_addr:
         unsigned long s_addr
     struct sockaddr_in:
         int sin_port
         in_addr sin_addr
+    cdef struct in6_addr:
+        char s6_addr[16]
     struct sockaddr_in6:
-        int sin6_port
+        short int sin6_family
+        unsigned short int sin6_port
+        unsigned long int sin6_flowinfo
+        in6_addr sin6_addr
+        unsigned long int sin6_scope_id
     int getsockopt(SOCKET s, int level, int optname, char *optval, int *optlen)
     enum:
         SOL_SOCKET
@@ -100,6 +107,9 @@ cdef extern from '':
                             WSAPROTOCOL_INFO *lpProtocolInfo,
                             char *lpszAddressString,
                             DWORD *lpdwAddressStringLength)
+    int WSAStringToAddressA(char *AddressString, int AddressFamily,
+                            WSAPROTOCOL_INFO *lpProtocolInfo,
+                            sockaddr *lpAddress, int *lpAddressLength)
 
 cdef extern from 'string.h':
     void *memset(void *s, int c, size_t n)
@@ -144,7 +154,7 @@ cdef class CompletionPort:
             raise_error(0, 'CreateIoCompletionPort')
         self.port = res
 
-    def addHandle(self, long handle, long key=0):
+    def addHandle(self, HANDLE handle, size_t key=0):
         cdef HANDLE res
         res = CreateIoCompletionPort(handle, self.port, key, 0)
         if not res:
@@ -152,7 +162,8 @@ cdef class CompletionPort:
 
     def getEvent(self, long timeout):
         cdef PyThreadState *_save
-        cdef unsigned long bytes, key, rc
+        cdef unsigned long bytes, rc
+        cdef size_t key
         cdef myOVERLAPPED *ov
 
         _save = PyEval_SaveThread()
@@ -173,7 +184,7 @@ cdef class CompletionPort:
 
         return (rc, bytes, key, obj)
 
-    def postEvent(self, unsigned long bytes, unsigned long key, obj):
+    def postEvent(self, unsigned long bytes, size_t key, obj):
         cdef myOVERLAPPED *ov
         cdef unsigned long rc
 
@@ -186,6 +197,9 @@ cdef class CompletionPort:
 
         rc = PostQueuedCompletionStatus(self.port, bytes, key, <OVERLAPPED *>ov)
         if not rc:
+            if ov:
+                Py_DECREF(obj)
+                PyMem_Free(ov)
             raise_error(0, 'PostQueuedCompletionStatus')
 
     def __del__(self):
@@ -193,13 +207,13 @@ cdef class CompletionPort:
 
 def makesockaddr(object buff):
     cdef void *mem_buffer
-    cdef int size
+    cdef Py_ssize_t size
 
     PyObject_AsReadBuffer(buff, &mem_buffer, &size)
     # XXX: this should really return the address family as well
     return _makesockaddr(<sockaddr *>mem_buffer, size)
 
-cdef object _makesockaddr(sockaddr *addr, int len):
+cdef object _makesockaddr(sockaddr *addr, Py_ssize_t len):
     cdef sockaddr_in *sin
     cdef sockaddr_in6 *sin6
     cdef char buff[256]
@@ -225,6 +239,7 @@ cdef object _makesockaddr(sockaddr *addr, int len):
     else:
         return PyString_FromStringAndSize(addr.sa_data, sizeof(addr.sa_data))
 
+
 cdef object fillinetaddr(sockaddr_in *dest, object addr):
     cdef unsigned short port
     cdef unsigned long res
@@ -238,6 +253,28 @@ cdef object fillinetaddr(sockaddr_in *dest, object addr):
     dest.sin_addr.s_addr = res
 
     dest.sin_port = htons(port)
+
+
+cdef object fillinet6addr(sockaddr_in6 *dest, object addr):
+    cdef unsigned short port
+    cdef unsigned long res
+    cdef char *hoststr
+    cdef int addrlen = sizeof(sockaddr_in6)
+    host, port, flow, scope = addr
+    host = host.split("%")[0] # remove scope ID, if any
+
+    hoststr = PyString_AsString(host)
+    cdef int parseresult = WSAStringToAddressA(hoststr, AF_INET6, NULL,
+                                               <sockaddr *>dest, &addrlen)
+    if parseresult == SOCKET_ERROR:
+        raise ValueError, 'invalid IPv6 address %r' % (host,)
+    if parseresult != 0:
+        raise RuntimeError, 'undefined error occurred during address parsing'
+    # sin6_host field was handled by WSAStringToAddress
+    dest.sin6_port = htons(port)
+    dest.sin6_flowinfo = flow
+    dest.sin6_scope_id = scope
+
 
 def AllocateReadBuffer(int size):
     return PyBuffer_New(size)

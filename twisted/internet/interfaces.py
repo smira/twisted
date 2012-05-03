@@ -250,7 +250,9 @@ class IReactorTCP(Interface):
 
         @param backlog: size of the listen queue
 
-        @param interface: the hostname to bind to, defaults to '' (all)
+        @param interface: The local IPv4 or IPv6 address to which to bind;
+            defaults to '', ie all IPv4 addresses.  To bind to all IPv4 and IPv6
+            addresses, you must call this method twice.
 
         @return: an object that provides L{IListeningPort}.
 
@@ -488,6 +490,73 @@ class IReactorMulticast(Interface):
 
         @see: L{twisted.internet.interfaces.IMulticastTransport}
         @see: U{http://twistedmatrix.com/documents/current/core/howto/udp.html}
+        """
+
+
+
+class IReactorSocket(Interface):
+    """
+    Methods which allow a reactor to use externally created sockets.
+
+    For example, to use C{adoptStreamPort} to implement behavior equivalent
+    to that of L{IReactorTCP.listenTCP}, you might write code like this::
+
+        from socket import SOMAXCONN, AF_INET, SOCK_STREAM, socket
+        portSocket = socket(AF_INET, SOCK_STREAM)
+        # Set FD_CLOEXEC on port, left as an exercise.  Then make it into a
+        # non-blocking listening port:
+        portSocket.setblocking(False)
+        portSocket.bind(('192.168.1.2', 12345))
+        portSocket.listen(SOMAXCONN)
+
+        # Now have the reactor use it as a TCP port
+        port = reactor.adoptStreamPort(
+            portSocket.fileno(), AF_INET, YourFactory())
+
+        # portSocket itself is no longer necessary, and needs to be cleaned
+        # up by us.
+        portSocket.close()
+
+        # Whenever the server is no longer needed, stop it as usual.
+        stoppedDeferred = port.stopListening()
+
+    Another potential use is to inherit a listening descriptor from a parent
+    process (for example, systemd or launchd), or to receive one over a UNIX
+    domain socket.
+
+    Some plans for extending this interface exist.  See:
+
+        - U{http://twistedmatrix.com/trac/ticket/5570}: established connections
+        - U{http://twistedmatrix.com/trac/ticket/5573}: AF_UNIX ports
+        - U{http://twistedmatrix.com/trac/ticket/5574}: SOCK_DGRAM sockets
+    """
+
+    def adoptStreamPort(fileDescriptor, addressFamily, factory):
+        """
+        Add an existing listening I{SOCK_STREAM} socket to the reactor to
+        monitor for new connections to accept and handle.
+        @param fileDescriptor: A file descriptor associated with a socket which
+            is already bound to an address and marked as listening.  The socket
+            must be set non-blocking.  Any additional flags (for example,
+            close-on-exec) must also be set by application code.  Application
+            code is responsible for closing the file descriptor, which may be
+            done as soon as C{adoptStreamPort} returns.
+        @type fileDescriptor: C{int}
+
+        @param addressFamily: The address family (or I{domain}) of the socket.
+            For example, L{socket.AF_INET6}.
+
+        @param factory: A L{ServerFactory} instance to use to create new
+            protocols to handle connections accepted via this socket.
+
+        @return: An object providing L{IListeningPort}.
+
+        @raise UnsupportedAddressFamily: If the given address family is not
+            supported by this reactor, or not supported with the given socket
+            type.
+
+        @raise UnsupportedSocketType: If the given socket type is not supported
+            by this reactor, or not supported with the given socket type.
         """
 
 
@@ -870,6 +939,37 @@ class IReactorPluggableResolver(Interface):
         """
 
 
+class IReactorDaemonize(Interface):
+    """
+    A reactor which provides hooks that need to be called before and after
+    daemonization.
+
+    Notes:
+       - This interface SHOULD NOT be called by applications.
+       - This interface should only be implemented by reactors as a workaround
+         (in particular, it's implemented currently only by kqueue()).
+         For details please see the comments on ticket #1918.
+    """
+
+    def beforeDaemonize():
+        """
+        Hook to be called immediately before daemonization. No reactor methods
+        may be called until L{afterDaemonize} is called.
+
+        @return: C{None}.
+        """
+
+
+    def afterDaemonize():
+        """
+        Hook to be called immediately after daemonization. This may only be
+        called after L{beforeDaemonize} had been called previously.
+
+        @return: C{None}.
+        """
+
+
+
 class IReactorFDSet(Interface):
     """
     Implement me to be able to use L{IFileDescriptor} type resources.
@@ -1189,7 +1289,7 @@ class IProducer(Interface):
 class IPushProducer(IProducer):
     """
     A push producer, also known as a streaming producer is expected to
-    produce (write to this consumer) data on a continous basis, unless
+    produce (write to this consumer) data on a continuous basis, unless
     it has been paused. A paused push producer will resume producing
     after its resumeProducing() method is called.   For a push producer
     which is not pauseable, these functions may be noops.
@@ -1355,7 +1455,7 @@ class IHalfCloseableProtocol(Interface):
         Notification of the read connection being closed.
 
         This indicates peer did half-close of write side. It is now
-        the responsiblity of the this protocol to call
+        the responsibility of the this protocol to call
         loseConnection().  In addition, the protocol MUST make sure a
         reference to it still exists (i.e. by doing a callLater with
         one of its methods, etc.)  as the reactor will only have a
@@ -1372,6 +1472,26 @@ class IHalfCloseableProtocol(Interface):
         This will never be called for TCP connections as TCP does not
         support notification of this type of half-close.
         """
+
+
+
+class IFileDescriptorReceiver(Interface):
+    """
+    Protocols may implement L{IFileDescriptorReceiver} to receive file
+    descriptors sent to them.  This is useful in conjunction with
+    L{IUNIXTransport}, which allows file descriptors to be sent between
+    processes on a single host.
+    """
+    def fileDescriptorReceived(descriptor):
+        """
+        Called when a file descriptor is received over the connection.
+
+        @param descriptor: The descriptor which was received.
+        @type descriptor: C{int}
+
+        @return: C{None}
+        """
+
 
 
 class IProtocolFactory(Interface):
@@ -1523,13 +1643,41 @@ class ITCPTransport(ITransport):
 
     def getHost():
         """
-        Returns L{IPv4Address}.
+        Returns L{IPv4Address} or L{IPv6Address}.
         """
 
     def getPeer():
         """
-        Returns L{IPv4Address}.
+        Returns L{IPv4Address} or L{IPv6Address}.
         """
+
+
+
+class IUNIXTransport(ITransport):
+    """
+    Transport for stream-oriented unix domain connections.
+    """
+    def sendFileDescriptor(descriptor):
+        """
+        Send a duplicate of this (file, socket, pipe, etc) descriptor to the
+        other end of this connection.
+
+        The send is non-blocking and will be queued if it cannot be performed
+        immediately.  The send will be processed in order with respect to other
+        C{sendFileDescriptor} calls on this transport, but not necessarily with
+        respect to C{write} calls on this transport.  The send can only be
+        processed if there are also bytes in the normal connection-oriented send
+        buffer (ie, you must call C{write} at least as many times as you call
+        C{sendFileDescriptor}).
+
+        @param descriptor: An C{int} giving a valid file descriptor in this
+            process.  Note that a I{file descriptor} may actually refer to a
+            socket, a pipe, or anything else POSIX tries to treat in the same
+            way as a file.
+
+        @return: C{None}
+        """
+
 
 
 class ITLSTransport(ITCPTransport):
@@ -1899,4 +2047,3 @@ class IStreamClientEndpointStringParser(Interface):
         @return: a client endpoint
         @rtype: L{IStreamClientEndpoint}
         """
-

@@ -243,6 +243,19 @@ class ConnectionDone(ConnectionClosed):
 
 
 
+class FileDescriptorOverrun(ConnectionLost):
+    """
+    A mis-use of L{IUNIXTransport.sendFileDescriptor} caused the connection to
+    be closed.
+
+    Each file descriptor sent using C{sendFileDescriptor} must be associated
+    with at least one byte sent using L{ITransport.write}.  If at any point
+    fewer bytes have been written than file descriptors have been sent, the
+    connection is closed with this exception.
+    """
+
+
+
 class ConnectionFdescWentAway(ConnectionLost):
     """Uh""" #TODO
 
@@ -397,6 +410,28 @@ class ConnectingCancelledError(Exception):
 
 
 
+class UnsupportedAddressFamily(Exception):
+    """
+    An attempt was made to use a socket with an address family (eg I{AF_INET},
+    I{AF_INET6}, etc) which is not supported by the reactor.
+    """
+
+
+
+class UnsupportedSocketType(Exception):
+    """
+    An attempt was made to use a socket of a type (eg I{SOCK_STREAM},
+    I{SOCK_DGRAM}, etc) which is not supported by the reactor.
+    """
+
+
+class AlreadyListened(Exception):
+    """
+    An attempt was made to listen on a file descriptor which can only be
+    listened on once.
+    """
+
+
 __all__ = [
     'BindError', 'CannotListenError', 'MulticastJoinError',
     'MessageLengthError', 'DNSLookupError', 'ConnectInProgressError',
@@ -409,4 +444,5 @@ __all__ = [
     'AlreadyCancelled', 'PotentialZombieWarning', 'ProcessDone',
     'ProcessTerminated', 'ProcessExitedAlready', 'NotConnectingError',
     'NotListeningError', 'ReactorNotRunning', 'ReactorAlreadyRunning',
-    'ReactorAlreadyInstalledError', 'ConnectingCancelledError']
+    'ReactorAlreadyInstalledError', 'ConnectingCancelledError',
+    'UnsupportedAddressFamily', 'UnsupportedSocketType']

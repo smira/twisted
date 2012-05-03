@@ -1,12 +1,18 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
+"""
+This demonstrates a web server which can run behind a name-based virtual hosting
+reverse proxy.  It decodes modified URLs like:
 
-# This web server makes it possible to put it behind a reverse proxy
-# transparently. Just have the reverse proxy proxy to 
-# host:port/vhost/http/external-host:port/
-# and on redirects and other link calculation, the external-host:port will
-# be transmitted to the client.
+    host:port/vhost/http/external-host:port/
+
+and dispatches the request as if it had been received on the given protocol,
+external host, and port.
+
+Usage:
+    python web.py
+"""
 
 from twisted.internet import reactor
 from twisted.web import static, server, vhost, twcgi, script
@@ -14,8 +20,6 @@ from twisted.web import static, server, vhost, twcgi, script
 root = static.File("static")
 root.processors = {
             '.cgi': twcgi.CGIScript,
-            '.php3': twcgi.PHP3Script,
-            '.php': twcgi.PHPScript,
             '.epy': script.PythonScript,
             '.rpy': script.ResourceScript,
 }

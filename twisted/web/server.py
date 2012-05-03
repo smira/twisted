@@ -34,7 +34,31 @@ from twisted.web import util as webutil, resource
 from twisted.web.error import UnsupportedMethod
 from twisted.web.microdom import escape
 
+from twisted.python.versions import Version
+from twisted.python.deprecate import deprecatedModuleAttribute
+
+
+__all__ = [
+    'supportedMethods',
+    'Request',
+    'Session',
+    'Site',
+    'version',
+    'NOT_DONE_YET'
+]
+
+
 # backwards compatability
+deprecatedModuleAttribute(
+    Version("Twisted", 12, 1, 0),
+    "Please use twisted.web.http.datetimeToString instead",
+    "twisted.web.server",
+    "date_time_string")
+deprecatedModuleAttribute(
+    Version("Twisted", 12, 1, 0),
+    "Please use twisted.web.http.stringToDatetime instead",
+    "twisted.web.server",
+    "string_date_time")
 date_time_string = http.datetimeToString
 string_date_time = http.stringToDatetime
 
@@ -286,10 +310,13 @@ class Request(pb.Copyable, http.Request, components.Componentized):
         """
         self.setETag(tag)
 
-    def view_setResponseCode(self, issuer, code):
-        """Remote version of setResponseCode; same interface.
+
+    def view_setResponseCode(self, issuer, code, message=None):
         """
-        self.setResponseCode(code)
+        Remote version of setResponseCode; same interface.
+        """
+        self.setResponseCode(code, message)
+
 
     def view_registerProducer(self, issuer, producer, streaming):
         """Remote version of registerProducer; same interface.
@@ -563,4 +590,3 @@ class Site(http.HTTPFactory):
 
 
 import html
-

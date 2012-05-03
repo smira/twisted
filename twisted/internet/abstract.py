@@ -7,6 +7,8 @@
 Support for generic select()able objects.
 """
 
+from socket import AF_INET6, inet_pton, error
+
 from zope.interface import implements
 
 # Twisted Imports
@@ -153,7 +155,7 @@ class FileDescriptor(_ConsumerMixin, _LogOwner):
 
     SEND_LIMIT = 128*1024
 
-    implements(interfaces.IProducer, interfaces.IReadWriteDescriptor,
+    implements(interfaces.IPushProducer, interfaces.IReadWriteDescriptor,
                interfaces.IConsumer, interfaces.ITransport, interfaces.IHalfCloseableDescriptor)
 
     def __init__(self, reactor=None):
@@ -232,7 +234,7 @@ class FileDescriptor(_ConsumerMixin, _LogOwner):
             l = self.writeSomeData(self.dataBuffer)
 
         # There is no writeSomeData implementation in Twisted which returns
-        # 0, but the documentation for writeSomeData used to claim negative
+        # < 0, but the documentation for writeSomeData used to claim negative
         # integers meant connection lost.  Keep supporting this here,
         # although it may be worth deprecating and removing at some point.
         if l < 0 or isinstance(l, Exception):
@@ -288,6 +290,34 @@ class FileDescriptor(_ConsumerMixin, _LogOwner):
         # override in subclasses
         self.connectionLost(reason)
 
+
+    def _isSendBufferFull(self):
+        """
+        Determine whether the user-space send buffer for this transport is full
+        or not.
+
+        When the buffer contains more than C{self.bufferSize} bytes, it is
+        considered full.  This might be improved by considering the size of the
+        kernel send buffer and how much of it is free.
+
+        @return: C{True} if it is full, C{False} otherwise.
+        """
+        return len(self.dataBuffer) + self._tempDataLen > self.bufferSize
+
+
+    def _maybePauseProducer(self):
+        """
+        Possibly pause a producer, if there is one and the send buffer is full.
+        """
+        # If we are responsible for pausing our producer,
+        if self.producer is not None and self.streamingProducer:
+            # and our buffer is full,
+            if self._isSendBufferFull():
+                # pause it.
+                self.producerPaused = 1
+                self.producer.pauseProducing()
+
+
     def write(self, data):
         """Reliably write some data.
 
@@ -303,17 +333,13 @@ class FileDescriptor(_ConsumerMixin, _LogOwner):
         if data:
             self._tempDataBuffer.append(data)
             self._tempDataLen += len(data)
-            # If we are responsible for pausing our producer,
-            if self.producer is not None and self.streamingProducer:
-                # and our buffer is full,
-                if len(self.dataBuffer) + self._tempDataLen > self.bufferSize:
-                    # pause it.
-                    self.producerPaused = 1
-                    self.producer.pauseProducing()
+            self._maybePauseProducer()
             self.startWriting()
 
+
     def writeSequence(self, iovec):
-        """Reliably write a sequence of data.
+        """
+        Reliably write a sequence of data.
 
         Currently, this is a convenience method roughly equivalent to::
 
@@ -335,14 +361,9 @@ class FileDescriptor(_ConsumerMixin, _LogOwner):
         self._tempDataBuffer.extend(iovec)
         for i in iovec:
             self._tempDataLen += len(i)
-        # If we are responsible for pausing our producer,
-        if self.producer is not None and self.streamingProducer:
-            # and our buffer is full,
-            if len(self.dataBuffer) + self._tempDataLen > self.bufferSize:
-                # pause it.
-                self.producerPaused = 1
-                self.producer.pauseProducing()
+        self._maybePauseProducer()
         self.startWriting()
+
 
     def loseConnection(self, _connDone=failure.Failure(main.CONNECTION_DONE)):
         """Close the connection at the next available opportunity.
@@ -468,4 +489,29 @@ def isIPAddress(addr):
     return False
 
 
-__all__ = ["FileDescriptor"]
+def isIPv6Address(addr):
+    """
+    Determine whether the given string represents an IPv6 address.
+
+    @param addr: A string which may or may not be the hex
+        representation of an IPv6 address.
+    @type addr: C{str}
+
+    @return: C{True} if C{addr} represents an IPv6 address, C{False}
+        otherwise.
+    @rtype: C{bool}
+    """
+    if '%' in addr:
+        addr = addr.split('%', 1)[0]
+    if not addr:
+        return False
+    try:
+        # This might be a native implementation or the one from
+        # twisted.python.compat.
+        inet_pton(AF_INET6, addr)
+    except (ValueError, error):
+        return False
+    return True
+
+
+__all__ = ["FileDescriptor", "isIPAddress", "isIPv6Address"]

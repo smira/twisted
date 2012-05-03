@@ -32,7 +32,8 @@ extensions = [
 
     Extension("twisted.python._epoll",
               ["twisted/python/_epoll.c"],
-              condition=lambda builder: _isCPython and _hasEpoll(builder)),
+              condition=lambda builder: (_isCPython and _hasEpoll(builder) and
+                                         sys.version_info[:2] < (2, 6))),
 
     Extension("twisted.internet.iocpreactor.iocpsupport",
               ["twisted/internet/iocpreactor/iocpsupport/iocpsupport.c",
@@ -42,6 +43,9 @@ extensions = [
 
     Extension("twisted.python._initgroups",
               ["twisted/python/_initgroups.c"]),
+    Extension("twisted.python.sendmsg",
+              sources=["twisted/python/sendmsg.c"],
+              condition=lambda _: sys.platform != "win32"),
     Extension("twisted.internet._sigchld",
               ["twisted/internet/_sigchld.c"],
               condition=lambda _: sys.platform != "win32"),
