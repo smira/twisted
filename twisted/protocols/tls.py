@@ -35,22 +35,23 @@ yielding TLS over TLS - useful to implement onion routing.  It can also be used
 to run TLS over unusual transports, such as UNIX sockets and stdio.
 """
 
+from __future__ import division, absolute_import
 
 from OpenSSL.SSL import Error, ZeroReturnError, WantReadError
 from OpenSSL.SSL import TLSv1_METHOD, Context, Connection
 
 try:
     Connection(Context(TLSv1_METHOD), None)
-except TypeError, e:
+except TypeError as e:
     if str(e) != "argument must be an int, or have a fileno() method.":
         raise
     raise ImportError("twisted.protocols.tls requires pyOpenSSL 0.10 or newer.")
 
-from zope.interface import implements
+from zope.interface import implementer, providedBy, directlyProvides
 
 from twisted.python.failure import Failure
 from twisted.python import log
-from twisted.python.reflect import safe_str
+from twisted.python._reflectpy3 import safe_str
 from twisted.internet.interfaces import ISystemHandle, ISSLTransport
 from twisted.internet.interfaces import IPushProducer, ILoggingContext
 from twisted.internet.main import CONNECTION_LOST
@@ -59,6 +60,7 @@ from twisted.internet.task import cooperate
 from twisted.protocols.policies import ProtocolWrapper, WrappingFactory
 
 
+@implementer(IPushProducer)
 class _PullToPush(object):
     """
     An adapter that converts a non-streaming to a streaming producer.
@@ -83,7 +85,6 @@ class _PullToPush(object):
     @ivar _coopTask: the result of calling L{cooperate}, the task driving the
                      streaming producer.
     """
-    implements(IPushProducer)
 
     _finished = False
 
@@ -157,6 +158,7 @@ class _PullToPush(object):
 
 
 
+@implementer(IPushProducer)
 class _ProducerMembrane(object):
     """
     Stand-in for producer registered with a L{TLSMemoryBIOProtocol} transport.
@@ -166,7 +168,6 @@ class _ProducerMembrane(object):
 
     @ivar _producer: The application-layer producer.
     """
-    implements(IPushProducer)
 
     _producerPaused = False
 
@@ -205,6 +206,7 @@ class _ProducerMembrane(object):
 
 
 
+@implementer(ISystemHandle, ISSLTransport)
 class TLSMemoryBIOProtocol(ProtocolWrapper):
     """
     L{TLSMemoryBIOProtocol} is a protocol wrapper which uses OpenSSL via a
@@ -259,7 +261,6 @@ class TLSMemoryBIOProtocol(ProtocolWrapper):
         or C{None} if no producer has been registered or a previous one was
         unregistered.
     """
-    implements(ISystemHandle, ISSLTransport)
 
     _reason = None
     _handshakeDone = False
@@ -297,6 +298,10 @@ class TLSMemoryBIOProtocol(ProtocolWrapper):
         else:
             self._tlsConnection.set_accept_state()
         self._appSendBuffer = []
+
+        # Add interfaces provided by the transport we are wrapping:
+        for interface in providedBy(transport):
+            directlyProvides(self, interface)
 
         # Intentionally skip ProtocolWrapper.makeConnection - it might call
         # wrappedProtocol.makeConnection, which we want to make conditional.
@@ -361,7 +366,7 @@ class TLSMemoryBIOProtocol(ProtocolWrapper):
                 # Passing in None means the user protocol's connnectionLost
                 # will get called with reason from underlying transport:
                 self._tlsShutdownFinished(None)
-            except Error, e:
+            except Error as e:
                 # Something went pretty wrong.  For example, this might be a
                 # handshake failure (because there were no shared ciphers, because
                 # a certificate failed to verify, etc).  TLS can no longer proceed.
@@ -530,7 +535,7 @@ class TLSMemoryBIOProtocol(ProtocolWrapper):
         Write a sequence of application bytes by joining them into one string
         and passing them to L{write}.
         """
-        self.write("".join(iovec))
+        self.write(b"".join(iovec))
 
 
     def getPeerCertificate(self):

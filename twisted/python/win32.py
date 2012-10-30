@@ -11,8 +11,9 @@ See also twisted.python.shortcut.
     may safely be OR'ed into a mask for os.open.
 """
 
+from __future__ import division, absolute_import
+
 import re
-import exceptions
 import os
 
 try:
@@ -31,19 +32,16 @@ ERROR_DIRECTORY = 267
 
 O_BINARY = getattr(os, "O_BINARY", 0)
 
-def _determineWindowsError():
-    """
-    Determine which WindowsError name to export.
-    """
-    return getattr(exceptions, 'WindowsError', FakeWindowsError)
-
 class FakeWindowsError(OSError):
     """
     Stand-in for sometimes-builtin exception on platforms for which it
     is missing.
     """
 
-WindowsError = _determineWindowsError()
+try:
+    WindowsError = WindowsError
+except NameError:
+    WindowsError = FakeWindowsError
 
 # XXX fix this to use python's builtin _winreg?
 

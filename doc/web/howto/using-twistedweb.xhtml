@@ -192,6 +192,48 @@ arguments passed to the resource regardless of whether they used GET
 
 </p>
 
+<h3>Request encoders</h3>
+
+<p>
+  When using a <code class="API" base="twisted.web.resource">Resource</code>,
+  one can specify wrap it using a
+  <code class="API" base="twisted.web.resource">EncodingResourceWrapper</code>
+  and passing a list of encoder factories.  The encoder factories are
+  called when a request is processed and potentially return an encoder.
+  By default twisted provides
+  <code class="API" base="twisted.web.server">GzipEncoderFactory</code> which
+  manages standard gzip compression. You can use it this way:
+</p>
+
+<pre class="python">
+from twisted.web.server import Site, GzipEncoderFactory
+from twisted.web.resource import Resource, EncodingResourceWrapper
+from twisted.internet import reactor
+
+class Simple(Resource):
+    isLeaf = True
+    def render_GET(self, request):
+        return "&lt;html&gt;Hello, world!&lt;/html&gt;"
+
+resource = Simple()
+wrapped = EncodingResourceWrapper(resource, [GzipEncoderFactory()])
+site = Site(wrapped)
+reactor.listenTCP(8080, site)
+reactor.run()
+</pre>
+
+<p>
+  Using compression on SSL served resources where the user can influence the
+  content can lead to information leak, so be careful which resources use
+  request encoders.
+</p>
+
+<p>
+  Note that only encoder can be used per request: the first encoder factory
+  returning an object will be used, so the order in which they are specified
+  matters.
+</p>
+
 <h3>Session</h3>
 <a name="sessions" />
 
@@ -649,7 +691,7 @@ resource.indexNames = ['index.pl']
 
 <h3>Serving WSGI Applications</h3>
 
-<p><a href="http://wsgi.org/wsgi">WSGI</a> is the Web Server Gateway
+<p><a href="http://wsgi.org">WSGI</a> is the Web Server Gateway
 Interface. It is a specification for web servers and application servers to
 communicate with Python web applications. All modern Python web frameworks
 support the WSGI interface.</p>

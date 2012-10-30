@@ -9,6 +9,8 @@ import os
 import shutil
 import sys
 
+import unittest as pyunit
+
 from twisted.python import util
 from twisted.python.hashlib import md5
 from twisted.trial.test import packages
@@ -396,7 +398,7 @@ class LoaderTest(packages.SysPathManglingTest):
         represented by a different instances of the L{TestCase} they are
         defined on.
         """
-        class DistinctInstances(unittest.TestCase):
+        class DistinctInstances(pyunit.TestCase):
             def test_1(self):
                 self.first = 'test1Run'
 
@@ -496,12 +498,12 @@ class LoaderTest(packages.SysPathManglingTest):
         suite1 = self.loader.loadByNames(methods)
         suite2 = runner.TestSuite(map(self.loader.loadByName, methods))
         self.assertSuitesEqual(suite1, suite2)
-        
+
 
 
 class ZipLoadingTest(LoaderTest):
     def setUp(self):
-        from twisted.test.test_paths import zipit
+        from twisted.python.test.test_zippath import zipit
         LoaderTest.setUp(self)
         zipit(self.parent, self.parent+'.zip')
         self.parent += '.zip'

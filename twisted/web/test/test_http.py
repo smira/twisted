@@ -6,7 +6,7 @@ Test HTTP support.
 """
 
 from urlparse import urlparse, urlunsplit, clear_cache
-import random, urllib, cgi
+import random, cgi
 
 from twisted.python.compat import set
 from twisted.python.failure import Failure
@@ -69,19 +69,26 @@ class ResponseTestMixin(object):
         """
         Assert that the C{responses} matches the C{expected} responses.
 
-        @type responses: C{str}
+        @type responses: C{bytes}
         @param responses: The bytes sent in response to one or more requests.
 
-        @type expected: C{list} of C{tuple} of C{str}
+        @type expected: C{list} of C{tuple} of C{bytes}
         @param expected: The expected values for the responses.  Each tuple
-            element of the list represents one response.  Each string element
-            of the tuple is a full header line without delimiter, except for
-            the last element which gives the full response body.
+            element of the list represents one response.  Each byte string
+            element of the tuple is a full header line without delimiter, except
+            for the last element which gives the full response body.
         """
         for response in expected:
             expectedHeaders, expectedContent = response[:-1], response[-1]
-            headers, rest = responses.split('\r\n\r\n', 1)
+            # Intentionally avoid mutating the inputs here.
+            expectedStatus = expectedHeaders[0]
+            expectedHeaders = expectedHeaders[1:]
+
+            headers, rest = responses.split(b'\r\n\r\n', 1)
             headers = headers.splitlines()
+            status = headers.pop(0)
+
+            self.assertEqual(expectedStatus, status)
             self.assertEqual(set(headers), set(expectedHeaders))
             content = rest[:len(expectedContent)]
             responses = rest[len(expectedContent):]
@@ -363,7 +370,7 @@ class IdentityTransferEncodingTests(TestCase):
     def test_rejectDataAfterFinished(self):
         """
         If data is passed to L{_IdentityTransferDecoder.dataReceived} after the
-        finish callback has been invoked, L{RuntimeError} is raised.
+        finish callback has been invoked, C{RuntimeError} is raised.
         """
         failures = []
         def finish(bytes):
@@ -523,7 +530,7 @@ class ChunkedTransferEncodingTests(unittest.TestCase):
 
     def test_afterFinished(self):
         """
-        L{_ChunkedTransferDecoder.dataReceived} raises L{RuntimeError} if it
+        L{_ChunkedTransferDecoder.dataReceived} raises C{RuntimeError} if it
         is called after it has seen the last chunk.
         """
         p = http._ChunkedTransferDecoder(None, lambda bytes: None)
@@ -541,8 +548,8 @@ class ChunkedTransferEncodingTests(unittest.TestCase):
         exc = self.assertRaises(_DataLoss, parser.noMoreData)
         self.assertEqual(
             str(exc),
-            "Chunked decoder in 'trailer' state, still expecting more data "
-            "to get to finished state.")
+            "Chunked decoder in 'TRAILER' state, still expecting more data "
+            "to get to 'FINISHED' state.")
 
 
     def test_finishedConnectionLose(self):
@@ -691,6 +698,20 @@ class ParsingTestCase(unittest.TestCase):
         self.assertEqual(
             channel.transport.value(),
             "HTTP/1.1 400 Bad Request\r\n\r\n")
+
+
+    def test_invalidHeaders(self):
+        """
+        If a Content-Length header with a non-integer value is received, a 400
+        (Bad Request) response is sent to the client and the connection is
+        closed.
+        """
+        requestLines = ["GET / HTTP/1.0", "Content-Length: x", "", ""]
+        channel = self.runRequest("\n".join(requestLines), http.Request, 0)
+        self.assertEqual(
+            channel.transport.value(),
+            "HTTP/1.1 400 Bad Request\r\n\r\n")
+        self.assertTrue(channel.transport.disconnecting)
 
 
     def test_headerLimitPerRequest(self):
@@ -864,7 +885,7 @@ Hello,
                 # The tempfile API used to create content returns an
                 # instance of a different type depending on what platform
                 # we're running on.  The point here is to verify that the
-                # request body is in a file that's on the filesystem. 
+                # request body is in a file that's on the filesystem.
                 # Having a fileno method that returns an int is a somewhat
                 # close approximation of this. -exarkun
                 testcase.assertIsInstance(self.content.fileno(), int)
@@ -878,6 +899,37 @@ Hello,
 
         self.runRequest(httpRequest, MyRequest)
 
+    def test_malformed_chunkedEncoding(self):
+        """
+        If a request uses the I{chunked} transfer encoding, but provides an
+        invalid chunk length value, the request fails with a 400 error.
+        """
+        # See test_chunkedEncoding for the correct form of this request.
+        httpRequest = '''\
+GET / HTTP/1.0
+Content-Type: text/plain
+Transfer-Encoding: chunked
+
+MALFORMED_LINE_THIS_SHOULD_BE_'6'
+Hello,
+14
+ spam,eggs spam spam
+0
+
+'''
+        didRequest = []
+
+        class MyRequest(http.Request):
+
+            def process(self):
+                # This request should fail, so this should never be called.
+                didRequest.append(True)
+
+        channel = self.runRequest(httpRequest, MyRequest, success=False)
+        self.assertFalse(didRequest, "Request.process called")
+        self.assertEqual(
+            channel.transport.value(),
+            "HTTP/1.1 400 Bad Request\r\n\r\n")
 
 
 class QueryArgumentsTestCase(unittest.TestCase):
@@ -895,7 +947,7 @@ class QueryArgumentsTestCase(unittest.TestCase):
     def test_urlparse(self):
         """
         For a given URL, L{http.urlparse} should behave the same as
-        L{urlparse}, except it should always return C{str}, never C{unicode}.
+        C{urlparse}, except it should always return C{str}, never C{unicode}.
         """
         def urls():
             for scheme in ('http', 'https'):
@@ -1442,7 +1494,6 @@ class RequestTests(unittest.TestCase, ResponseTestMixin):
         called results in a L{RuntimeError} being raised.
         """
         channel = DummyChannel()
-        transport = channel.transport
         req = http.Request(channel, False)
         req.connectionLost(Failure(ConnectionLost("The end.")))
         self.assertRaises(RuntimeError, req.finish)
@@ -1561,7 +1612,7 @@ class MultilineHeadersTestCase(unittest.TestCase):
 
 
 
-class Expect100ContinueServerTests(unittest.TestCase):
+class Expect100ContinueServerTests(unittest.TestCase, ResponseTestMixin):
     """
     Test that the HTTP server handles 'Expect: 100-continue' header correctly.
 
@@ -1580,19 +1631,21 @@ class Expect100ContinueServerTests(unittest.TestCase):
         channel = http.HTTPChannel()
         channel.requestFactory = DummyHTTPHandler
         channel.makeConnection(transport)
-        channel.dataReceived("GET / HTTP/1.0\r\n")
-        channel.dataReceived("Host: www.example.com\r\n")
-        channel.dataReceived("Content-Length: 3\r\n")
-        channel.dataReceived("Expect: 100-continue\r\n")
-        channel.dataReceived("\r\n")
-        self.assertEqual(transport.value(), "")
-        channel.dataReceived("abc")
-        self.assertEqual(transport.value(),
-                         "HTTP/1.0 200 OK\r\n"
-                         "Command: GET\r\n"
-                         "Content-Length: 13\r\n"
-                         "Version: HTTP/1.0\r\n"
-                         "Request: /\r\n\r\n'''\n3\nabc'''\n")
+        channel.dataReceived(b"GET / HTTP/1.0\r\n")
+        channel.dataReceived(b"Host: www.example.com\r\n")
+        channel.dataReceived(b"Content-Length: 3\r\n")
+        channel.dataReceived(b"Expect: 100-continue\r\n")
+        channel.dataReceived(b"\r\n")
+        self.assertEqual(transport.value(), b"")
+        channel.dataReceived(b"abc")
+        self.assertResponseEquals(
+            transport.value(),
+            [(b"HTTP/1.0 200 OK",
+              b"Command: GET",
+              b"Content-Length: 13",
+              b"Version: HTTP/1.0",
+              b"Request: /",
+              b"'''\n3\nabc'''\n")])
 
 
     def test_expect100ContinueHeader(self):
@@ -1606,25 +1659,30 @@ class Expect100ContinueServerTests(unittest.TestCase):
         channel = http.HTTPChannel()
         channel.requestFactory = DummyHTTPHandler
         channel.makeConnection(transport)
-        channel.dataReceived("GET / HTTP/1.1\r\n")
-        channel.dataReceived("Host: www.example.com\r\n")
-        channel.dataReceived("Expect: 100-continue\r\n")
-        channel.dataReceived("Content-Length: 3\r\n")
+        channel.dataReceived(b"GET / HTTP/1.1\r\n")
+        channel.dataReceived(b"Host: www.example.com\r\n")
+        channel.dataReceived(b"Expect: 100-continue\r\n")
+        channel.dataReceived(b"Content-Length: 3\r\n")
         # The 100 continue response is not sent until all headers are
         # received:
-        self.assertEqual(transport.value(), "")
-        channel.dataReceived("\r\n")
+        self.assertEqual(transport.value(), b"")
+        channel.dataReceived(b"\r\n")
         # The 100 continue response is sent *before* the body is even
         # received:
-        self.assertEqual(transport.value(), "HTTP/1.1 100 Continue\r\n\r\n")
-        channel.dataReceived("abc")
-        self.assertEqual(transport.value(),
-                         "HTTP/1.1 100 Continue\r\n\r\n"
-                         "HTTP/1.1 200 OK\r\n"
-                         "Command: GET\r\n"
-                         "Content-Length: 13\r\n"
-                         "Version: HTTP/1.1\r\n"
-                         "Request: /\r\n\r\n'''\n3\nabc'''\n")
+        self.assertEqual(transport.value(), b"HTTP/1.1 100 Continue\r\n\r\n")
+        channel.dataReceived(b"abc")
+        response = transport.value()
+        self.assertTrue(
+            response.startswith(b"HTTP/1.1 100 Continue\r\n\r\n"))
+        response = response[len(b"HTTP/1.1 100 Continue\r\n\r\n"):]
+        self.assertResponseEquals(
+            response,
+            [(b"HTTP/1.1 200 OK",
+              b"Command: GET",
+              b"Content-Length: 13",
+              b"Version: HTTP/1.1",
+              b"Request: /",
+              b"'''\n3\nabc'''\n")])
 
 
     def test_expect100ContinueWithPipelining(self):
@@ -1638,26 +1696,30 @@ class Expect100ContinueServerTests(unittest.TestCase):
         channel.requestFactory = DummyHTTPHandler
         channel.makeConnection(transport)
         channel.dataReceived(
-            "GET / HTTP/1.1\r\n"
-            "Host: www.example.com\r\n"
-            "Expect: 100-continue\r\n"
-            "Content-Length: 3\r\n"
-            "\r\nabc"
-            "POST /foo HTTP/1.1\r\n"
-            "Host: www.example.com\r\n"
-            "Content-Length: 4\r\n"
-            "\r\ndefg")
-        self.assertEqual(transport.value(),
-                         "HTTP/1.1 100 Continue\r\n\r\n"
-                         "HTTP/1.1 200 OK\r\n"
-                         "Command: GET\r\n"
-                         "Content-Length: 13\r\n"
-                         "Version: HTTP/1.1\r\n"
-                         "Request: /\r\n\r\n"
-                         "'''\n3\nabc'''\n"
-                         "HTTP/1.1 200 OK\r\n"
-                         "Command: POST\r\n"
-                         "Content-Length: 14\r\n"
-                         "Version: HTTP/1.1\r\n"
-                         "Request: /foo\r\n\r\n"
-                         "'''\n4\ndefg'''\n")
+            b"GET / HTTP/1.1\r\n"
+            b"Host: www.example.com\r\n"
+            b"Expect: 100-continue\r\n"
+            b"Content-Length: 3\r\n"
+            b"\r\nabc"
+            b"POST /foo HTTP/1.1\r\n"
+            b"Host: www.example.com\r\n"
+            b"Content-Length: 4\r\n"
+            b"\r\ndefg")
+        response = transport.value()
+        self.assertTrue(
+            response.startswith(b"HTTP/1.1 100 Continue\r\n\r\n"))
+        response = response[len(b"HTTP/1.1 100 Continue\r\n\r\n"):]
+        self.assertResponseEquals(
+            response,
+            [(b"HTTP/1.1 200 OK",
+              b"Command: GET",
+              b"Content-Length: 13",
+              b"Version: HTTP/1.1",
+              b"Request: /",
+              b"'''\n3\nabc'''\n"),
+             (b"HTTP/1.1 200 OK",
+              b"Command: POST",
+              b"Content-Length: 14",
+              b"Version: HTTP/1.1",
+              b"Request: /foo",
+              b"'''\n4\ndefg'''\n")])

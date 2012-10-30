@@ -13,325 +13,56 @@ parsed by the L{clientFromString} and L{serverFromString} functions.
 
 import os, socket
 
-from zope.interface import implements, directlyProvides
+from zope.interface import implements
 import warnings
 
 from twisted.internet import interfaces, defer, error, fdesc
-from twisted.internet.protocol import ClientFactory, Protocol
 from twisted.plugin import IPlugin, getPlugins
 from twisted.internet.interfaces import IStreamServerEndpointStringParser
 from twisted.internet.interfaces import IStreamClientEndpointStringParser
 from twisted.python.filepath import FilePath
 from twisted.python.systemd import ListenFDs
+from twisted.internet import stdio
+from twisted.internet.stdio import PipeAddress
 
+from twisted.internet._endpointspy3 import (
+    _WrappingFactory, TCP4ServerEndpoint, TCP6ServerEndpoint,
+    TCP4ClientEndpoint, TCP6ClientEndpoint)
 
 __all__ = ["clientFromString", "serverFromString",
-           "TCP4ServerEndpoint", "TCP4ClientEndpoint",
+           "TCP4ServerEndpoint", "TCP6ServerEndpoint",
+           "TCP4ClientEndpoint", "TCP6ClientEndpoint",
            "UNIXServerEndpoint", "UNIXClientEndpoint",
            "SSL4ServerEndpoint", "SSL4ClientEndpoint",
-           "AdoptedStreamServerEndpoint"]
+           "AdoptedStreamServerEndpoint", "StandardIOEndpoint"]
 
 
-class _WrappingProtocol(Protocol):
+
+class StandardIOEndpoint(object):
     """
-    Wrap another protocol in order to notify my user when a connection has
-    been made.
-
-    @ivar _connectedDeferred: The L{Deferred} that will callback
-        with the C{wrappedProtocol} when it is connected.
-
-    @ivar _wrappedProtocol: An L{IProtocol} provider that will be
-        connected.
-    """
-
-    def __init__(self, connectedDeferred, wrappedProtocol):
-        """
-        @param connectedDeferred: The L{Deferred} that will callback
-            with the C{wrappedProtocol} when it is connected.
-
-        @param wrappedProtocol: An L{IProtocol} provider that will be
-            connected.
-        """
-        self._connectedDeferred = connectedDeferred
-        self._wrappedProtocol = wrappedProtocol
-
-        for iface in [interfaces.IHalfCloseableProtocol,
-                      interfaces.IFileDescriptorReceiver]:
-            if iface.providedBy(self._wrappedProtocol):
-                directlyProvides(self, iface)
-
-
-    def logPrefix(self):
-        """
-        Transparently pass through the wrapped protocol's log prefix.
-        """
-        if interfaces.ILoggingContext.providedBy(self._wrappedProtocol):
-            return self._wrappedProtocol.logPrefix()
-        return self._wrappedProtocol.__class__.__name__
-
-
-    def connectionMade(self):
-        """
-        Connect the C{self._wrappedProtocol} to our C{self.transport} and
-        callback C{self._connectedDeferred} with the C{self._wrappedProtocol}
-        """
-        self._wrappedProtocol.makeConnection(self.transport)
-        self._connectedDeferred.callback(self._wrappedProtocol)
-
-
-    def dataReceived(self, data):
-        """
-        Proxy C{dataReceived} calls to our C{self._wrappedProtocol}
-        """
-        return self._wrappedProtocol.dataReceived(data)
-
-
-    def fileDescriptorReceived(self, descriptor):
-        """
-        Proxy C{fileDescriptorReceived} calls to our C{self._wrappedProtocol}
-        """
-        return self._wrappedProtocol.fileDescriptorReceived(descriptor)
-
-
-    def connectionLost(self, reason):
-        """
-        Proxy C{connectionLost} calls to our C{self._wrappedProtocol}
-        """
-        return self._wrappedProtocol.connectionLost(reason)
-
-
-    def readConnectionLost(self):
-        """
-        Proxy L{IHalfCloseableProtocol.readConnectionLost} to our
-        C{self._wrappedProtocol}
-        """
-        self._wrappedProtocol.readConnectionLost()
-
-
-    def writeConnectionLost(self):
-        """
-        Proxy L{IHalfCloseableProtocol.writeConnectionLost} to our
-        C{self._wrappedProtocol}
-        """
-        self._wrappedProtocol.writeConnectionLost()
-
-
-
-class _WrappingFactory(ClientFactory):
-    """
-    Wrap a factory in order to wrap the protocols it builds.
-
-    @ivar _wrappedFactory: A provider of I{IProtocolFactory} whose buildProtocol
-        method will be called and whose resulting protocol will be wrapped.
-
-    @ivar _onConnection: An L{Deferred} that fires when the protocol is
-        connected
-
-    @ivar _connector: A L{connector <twisted.internet.interfaces.IConnector>}
-        that is managing the current or previous connection attempt.
-    """
-    protocol = _WrappingProtocol
-
-    def __init__(self, wrappedFactory):
-        """
-        @param wrappedFactory: A provider of I{IProtocolFactory} whose
-            buildProtocol method will be called and whose resulting protocol
-            will be wrapped.
-        """
-        self._wrappedFactory = wrappedFactory
-        self._onConnection = defer.Deferred(canceller=self._canceller)
-
-
-    def startedConnecting(self, connector):
-        """
-        A connection attempt was started.  Remember the connector which started
-        said attempt, for use later.
-        """
-        self._connector = connector
-
-
-    def _canceller(self, deferred):
-        """
-        The outgoing connection attempt was cancelled.  Fail that L{Deferred}
-        with a L{error.ConnectingCancelledError}.
-
-        @param deferred: The L{Deferred <defer.Deferred>} that was cancelled;
-            should be the same as C{self._onConnection}.
-        @type deferred: L{Deferred <defer.Deferred>}
-
-        @note: This relies on startedConnecting having been called, so it may
-            seem as though there's a race condition where C{_connector} may not
-            have been set.  However, using public APIs, this condition is
-            impossible to catch, because a connection API
-            (C{connectTCP}/C{SSL}/C{UNIX}) is always invoked before a
-            L{_WrappingFactory}'s L{Deferred <defer.Deferred>} is returned to
-            C{connect()}'s caller.
-
-        @return: C{None}
-        """
-        deferred.errback(
-            error.ConnectingCancelledError(
-                self._connector.getDestination()))
-        self._connector.stopConnecting()
-
-
-    def doStart(self):
-        """
-        Start notifications are passed straight through to the wrapped factory.
-        """
-        self._wrappedFactory.doStart()
-
-
-    def doStop(self):
-        """
-        Stop notifications are passed straight through to the wrapped factory.
-        """
-        self._wrappedFactory.doStop()
-
-
-    def buildProtocol(self, addr):
-        """
-        Proxy C{buildProtocol} to our C{self._wrappedFactory} or errback
-        the C{self._onConnection} L{Deferred}.
-
-        @return: An instance of L{_WrappingProtocol} or C{None}
-        """
-        try:
-            proto = self._wrappedFactory.buildProtocol(addr)
-        except:
-            self._onConnection.errback()
-        else:
-            return self.protocol(self._onConnection, proto)
-
-
-    def clientConnectionFailed(self, connector, reason):
-        """
-        Errback the C{self._onConnection} L{Deferred} when the
-        client connection fails.
-        """
-        if not self._onConnection.called:
-            self._onConnection.errback(reason)
-
-
-
-class TCP4ServerEndpoint(object):
-    """
-    TCP server endpoint with an IPv4 configuration
-
-    @ivar _reactor: An L{IReactorTCP} provider.
-
-    @type _port: int
-    @ivar _port: The port number on which to listen for incoming connections.
-
-    @type _backlog: int
-    @ivar _backlog: size of the listen queue
-
-    @type _interface: str
-    @ivar _interface: the hostname to bind to, defaults to '' (all)
+    A Standard Input/Output endpoint
     """
     implements(interfaces.IStreamServerEndpoint)
 
-    def __init__(self, reactor, port, backlog=50, interface=''):
+    def __init__(self, reactor):
         """
-        @param reactor: An L{IReactorTCP} provider.
-        @param port: The port number used listening
-        @param backlog: size of the listen queue
-        @param interface: the hostname to bind to, defaults to '' (all)
+        @param reactor: The reactor for the endpoint
         """
         self._reactor = reactor
-        self._port = port
-        self._listenArgs = dict(backlog=50, interface='')
-        self._backlog = backlog
-        self._interface = interface
 
 
-    def listen(self, protocolFactory):
+    def listen(self, stdioProtocolFactory):
         """
-        Implement L{IStreamServerEndpoint.listen} to listen on a TCP socket
+        Implement L{IStreamServerEndpoint.listen} to listen on stdin/stdout
         """
-        return defer.execute(self._reactor.listenTCP,
-                             self._port,
-                             protocolFactory,
-                             backlog=self._backlog,
-                             interface=self._interface)
-
-
-
-class TCP4ClientEndpoint(object):
-    """
-    TCP client endpoint with an IPv4 configuration.
-
-    @ivar _reactor: An L{IReactorTCP} provider.
-
-    @type _host: str
-    @ivar _host: The hostname to connect to as a C{str}
-
-    @type _port: int
-    @ivar _port: The port to connect to as C{int}
-
-    @type _timeout: int
-    @ivar _timeout: number of seconds to wait before assuming the
-        connection has failed.
-
-    @type _bindAddress: tuple
-    @type _bindAddress: a (host, port) tuple of local address to bind
-        to, or None.
-    """
-    implements(interfaces.IStreamClientEndpoint)
-
-    def __init__(self, reactor, host, port, timeout=30, bindAddress=None):
-        """
-        @param reactor: An L{IReactorTCP} provider
-        @param host: A hostname, used when connecting
-        @param port: The port number, used when connecting
-        @param timeout: number of seconds to wait before assuming the
-            connection has failed.
-        @param bindAddress: a (host, port tuple of local address to bind to,
-            or None.
-        """
-        self._reactor = reactor
-        self._host = host
-        self._port = port
-        self._timeout = timeout
-        self._bindAddress = bindAddress
-
-
-    def connect(self, protocolFactory):
-        """
-        Implement L{IStreamClientEndpoint.connect} to connect via TCP.
-        """
-        try:
-            wf = _WrappingFactory(protocolFactory)
-            self._reactor.connectTCP(
-                self._host, self._port, wf,
-                timeout=self._timeout, bindAddress=self._bindAddress)
-            return wf._onConnection
-        except:
-            return defer.fail()
+        return defer.execute(stdio.StandardIO,
+                             stdioProtocolFactory.buildProtocol(PipeAddress()))
 
 
 
 class SSL4ServerEndpoint(object):
     """
     SSL secured TCP server endpoint with an IPv4 configuration.
-
-    @ivar _reactor: An L{IReactorSSL} provider.
-
-    @type _host: str
-    @ivar _host: The hostname to connect to as a C{str}
-
-    @type _port: int
-    @ivar _port: The port to connect to as C{int}
-
-    @type _sslContextFactory: L{OpenSSLCertificateOptions}
-    @var _sslContextFactory: SSL Configuration information as an
-        L{OpenSSLCertificateOptions}
-
-    @type _backlog: int
-    @ivar _backlog: size of the listen queue
-
-    @type _interface: str
-    @ivar _interface: the hostname to bind to, defaults to '' (all)
     """
     implements(interfaces.IStreamServerEndpoint)
 
@@ -339,13 +70,18 @@ class SSL4ServerEndpoint(object):
                  backlog=50, interface=''):
         """
         @param reactor: An L{IReactorSSL} provider.
-        @param port: The port number used listening
+
+        @param port: The port number used for listening
+        @type port: int
+
         @param sslContextFactory: An instance of
             L{twisted.internet._sslverify.OpenSSLCertificateOptions}.
-        @param timeout: number of seconds to wait before assuming the
-            connection has failed.
-        @param bindAddress: a (host, port tuple of local address to bind to,
-            or None.
+
+        @param backlog: Size of the listen queue
+        @type backlog: int
+
+        @param interface: The hostname to bind to, defaults to '' (all)
+        @type interface: str
         """
         self._reactor = reactor
         self._port = port
@@ -370,26 +106,6 @@ class SSL4ServerEndpoint(object):
 class SSL4ClientEndpoint(object):
     """
     SSL secured TCP client endpoint with an IPv4 configuration
-
-    @ivar _reactor: An L{IReactorSSL} provider.
-
-    @type _host: str
-    @ivar _host: The hostname to connect to as a C{str}
-
-    @type _port: int
-    @ivar _port: The port to connect to as C{int}
-
-    @type _sslContextFactory: L{OpenSSLCertificateOptions}
-    @var _sslContextFactory: SSL Configuration information as an
-        L{OpenSSLCertificateOptions}
-
-    @type _timeout: int
-    @ivar _timeout: number of seconds to wait before assuming the
-        connection has failed.
-
-    @type _bindAddress: tuple
-    @ivar _bindAddress: a (host, port) tuple of local address to bind
-        to, or None.
     """
     implements(interfaces.IStreamClientEndpoint)
 
@@ -397,14 +113,23 @@ class SSL4ClientEndpoint(object):
                  timeout=30, bindAddress=None):
         """
         @param reactor: An L{IReactorSSL} provider.
+
         @param host: A hostname, used when connecting
+        @type host: str
+
         @param port: The port number, used when connecting
-        @param sslContextFactory: SSL Configuration information as An instance
+        @type port: int
+
+        @param sslContextFactory: SSL Configuration information as an instance
             of L{OpenSSLCertificateOptions}.
-        @param timeout: number of seconds to wait before assuming the
+
+        @param timeout: Number of seconds to wait before assuming the
             connection has failed.
-        @param bindAddress: a (host, port tuple of local address to bind to,
+        @type timeout: int
+
+        @param bindAddress: A (host, port) tuple of local address to bind to,
             or None.
+        @type bindAddress: tuple
         """
         self._reactor = reactor
         self._host = host
@@ -433,15 +158,6 @@ class SSL4ClientEndpoint(object):
 class UNIXServerEndpoint(object):
     """
     UnixSocket server endpoint.
-
-    @type path: str
-    @ivar path: a path to a unix socket on the filesystem.
-
-    @type _listenArgs: dict
-    @ivar _listenArgs: A C{dict} of keyword args that will be passed
-        to L{IReactorUNIX.listenUNIX}
-
-    @var _reactor: An L{IReactorTCP} provider.
     """
     implements(interfaces.IStreamServerEndpoint)
 
@@ -449,13 +165,11 @@ class UNIXServerEndpoint(object):
         """
         @param reactor: An L{IReactorUNIX} provider.
         @param address: The path to the Unix socket file, used when listening
-        @param listenArgs: An optional dict of keyword args that will be
-            passed to L{IReactorUNIX.listenUNIX}
         @param backlog: number of connections to allow in backlog.
         @param mode: mode to set on the unix socket.  This parameter is
             deprecated.  Permissions should be set on the directory which
             contains the UNIX socket.
-        @param wantPID: if True, create a pidfile for the socket.
+        @param wantPID: If True, create a pidfile for the socket.
         """
         self._reactor = reactor
         self._address = address
@@ -479,30 +193,23 @@ class UNIXServerEndpoint(object):
 class UNIXClientEndpoint(object):
     """
     UnixSocket client endpoint.
-
-    @type _path: str
-    @ivar _path: a path to a unix socket on the filesystem.
-
-    @type _timeout: int
-    @ivar _timeout: number of seconds to wait before assuming the connection
-        has failed.
-
-    @type _checkPID: bool
-    @ivar _checkPID: if True, check for a pid file to verify that a server
-        is listening.
-
-    @var _reactor: An L{IReactorUNIX} provider.
     """
     implements(interfaces.IStreamClientEndpoint)
 
     def __init__(self, reactor, path, timeout=30, checkPID=0):
         """
         @param reactor: An L{IReactorUNIX} provider.
+
         @param path: The path to the Unix socket file, used when connecting
-        @param timeout: number of seconds to wait before assuming the
+        @type path: str
+
+        @param timeout: Number of seconds to wait before assuming the
             connection has failed.
-        @param checkPID: if True, check for a pid file to verify that a server
+        @type timeout: int
+
+        @param checkPID: If True, check for a pid file to verify that a server
             is listening.
+        @type checkPID: bool
         """
         self._reactor = reactor
         self._path = path
@@ -535,6 +242,8 @@ class AdoptedStreamServerEndpoint(object):
     @ivar _used: A C{bool} indicating whether this endpoint has been used to
         listen with a factory yet.  C{True} if so.
     """
+    implements(interfaces.IStreamServerEndpoint)
+
     _close = os.close
     _setNonBlocking = staticmethod(fdesc.setNonBlocking)
 
@@ -643,7 +352,6 @@ def _parseSSL(factory, port, privateKey="server.pem", certKey=None,
     @param factory: the protocol factory being parsed, or C{None}.  (This was a
         leftover argument from when this code was in C{strports}, and is now
         mostly None and unused.)
-
     @type factory: L{IProtocolFactory} or C{NoneType}
 
     @param port: the integer port number to bind
@@ -677,6 +385,34 @@ def _parseSSL(factory, port, privateKey="server.pem", certKey=None,
     cf = ssl.DefaultOpenSSLContextFactory(privateKey, certKey, **kw)
     return ((int(port), factory, cf),
             {'interface': interface, 'backlog': int(backlog)})
+
+
+
+class _StandardIOParser(object):
+    """
+    Stream server endpoint string parser for the Standard I/O type.
+
+    @ivar prefix: See L{IStreamClientEndpointStringParser.prefix}.
+    """
+    implements(IPlugin, IStreamServerEndpointStringParser)
+
+    prefix = "stdio"
+
+    def _parseServer(self, reactor):
+        """
+        Internal parser function for L{_parseServer} to convert the string
+        arguments into structured arguments for the L{StandardIOEndpoint}
+
+        @param reactor: Reactor for the endpoint
+        """
+        return StandardIOEndpoint(reactor)
+
+
+    def parseStreamServer(self, reactor, *args, **kwargs):
+        # Redirects to another function (self._parseServer), tricks zope.interface
+        # into believing the interface is correctly implemented.
+        return self._parseServer(reactor)
+
 
 
 class _SystemdParser(object):
@@ -714,7 +450,7 @@ class _SystemdParser(object):
 
         @return: A two-tuple of parsed positional arguments and parsed keyword
             arguments (a tuple and a dictionary).  These can be used to
-            construct a L{AdoptedStreamServerEndpoint}.
+            construct an L{AdoptedStreamServerEndpoint}.
         """
         index = int(index)
         fileno = self._sddaemon.inheritedDescriptors()[index]
@@ -726,6 +462,44 @@ class _SystemdParser(object):
         # Delegate to another function with a sane signature.  This function has
         # an insane signature to trick zope.interface into believing the
         # interface is correctly implemented.
+        return self._parseServer(reactor, *args, **kwargs)
+
+
+
+class _TCP6ServerParser(object):
+    """
+    Stream server endpoint string parser for the TCP6ServerEndpoint type.
+
+    @ivar prefix: See L{IStreamClientEndpointStringParser.prefix}.
+    """
+    implements(IPlugin, IStreamServerEndpointStringParser)
+
+    prefix = "tcp6"     # Used in _parseServer to identify the plugin with the endpoint type
+
+    def _parseServer(self, reactor, port, backlog=50, interface='::'):
+        """
+        Internal parser function for L{_parseServer} to convert the string
+        arguments into structured arguments for the L{TCP6ServerEndpoint}
+
+        @param reactor: An L{IReactorTCP} provider.
+
+        @param port: The port number used for listening
+        @type port: int
+
+        @param backlog: Size of the listen queue
+        @type backlog: int
+
+        @param interface: The hostname to bind to
+        @type interface: str
+        """
+        port = int(port)
+        backlog = int(backlog)
+        return TCP6ServerEndpoint(reactor, port, backlog, interface)
+
+
+    def parseStreamServer(self, reactor, *args, **kwargs):
+        # Redirects to another function (self._parseServer), tricks zope.interface
+        # into believing the interface is correctly implemented.
         return self._parseServer(reactor, *args, **kwargs)
 
 
@@ -857,6 +631,8 @@ def _parseServer(description, factory, default=None):
     endpointType = args[0]
     parser = _serverParsers.get(endpointType)
     if parser is None:
+        # If the required parser is not found in _server, check if
+        # a plugin exists for the endpointType
         for plugin in getPlugins(IStreamServerEndpointStringParser):
             if plugin.prefix == endpointType:
                 return (plugin, args[1:], kw)
@@ -1105,7 +881,7 @@ def _parseClientUNIX(*args, **kwargs):
     Valid keyword arguments to this function are all L{IReactorUNIX.connectUNIX}
     keyword arguments except for C{checkPID}.  Instead, C{lockfile} is accepted
     and has the same meaning.  Also C{path} is used instead of C{address}.
-    
+
     Valid positional arguments to this function are C{path}.
 
     @return: The coerced values as a C{dict}.
@@ -1164,15 +940,15 @@ def clientFromString(reactor, description):
 
         clientFromString(reactor, "ssl:host=web.example.com:port=443:"
                                   "caCertsDir=/etc/ssl/certs")
-    
+
     You can create a UNIX client endpoint with the 'path' argument and optional
     'lockfile' and 'timeout' arguments::
-    
+
         clientFromString(reactor, "unix:path=/var/foo/bar:lockfile=1:timeout=9")
-    
+
     or, with the path as a positional argument with or without optional
     arguments as in the following 2 examples::
-    
+
         clientFromString(reactor, "unix:/var/foo/bar")
         clientFromString(reactor, "unix:/var/foo/bar:lockfile=1:timeout=9")
 

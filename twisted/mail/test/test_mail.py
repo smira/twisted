@@ -1043,8 +1043,6 @@ def tearDownDNS(self):
     dl = []
     dl.append(defer.maybeDeferred(self.port.stopListening))
     dl.append(defer.maybeDeferred(self.udpPort.stopListening))
-    if self.resolver.protocol.transport is not None:
-        dl.append(defer.maybeDeferred(self.resolver.protocol.transport.stopListening))
     try:
         self.resolver._parseCall.cancel()
     except:
@@ -2029,6 +2027,29 @@ class TestDomain:
             if aliases:
                 return lambda: aliases
             raise smtp.SMTPBadRcpt(user)
+
+
+
+class SSLContextFactoryTests(unittest.TestCase):
+    """
+    Tests for twisted.mail.protocols.SSLContextFactory.
+    """
+    def test_deprecation(self):
+        """
+        Accessing L{twisted.mail.protocols.SSLContextFactory} emits a
+        deprecation warning recommending the use of the more general SSL context
+        factory from L{twisted.internet.ssl}.
+        """
+        mail.protocols.SSLContextFactory
+        warningsShown = self.flushWarnings([self.test_deprecation])
+        self.assertEqual(len(warningsShown), 1)
+        self.assertIdentical(warningsShown[0]['category'], DeprecationWarning)
+        self.assertEqual(
+            warningsShown[0]['message'],
+            'twisted.mail.protocols.SSLContextFactory was deprecated in '
+            'Twisted 12.2.0: Use twisted.internet.ssl.'
+            'DefaultOpenSSLContextFactory instead.')
+
 
 
 from twisted.python.runtime import platformType

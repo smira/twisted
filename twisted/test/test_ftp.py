@@ -81,9 +81,19 @@ class FTPServerTestCase(unittest.TestCase):
         self.dirPath = filepath.FilePath(self.directory)
 
         # Start the server
-        p = portal.Portal(ftp.FTPRealm(self.directory))
+        p = portal.Portal(ftp.FTPRealm(
+            anonymousRoot=self.directory,
+            userHome=self.directory,
+            ))
         p.registerChecker(checkers.AllowAnonymousAccess(),
                           credentials.IAnonymous)
+
+        users_checker = checkers.InMemoryUsernamePasswordDatabaseDontUse()
+        self.username = "test-user"
+        self.password = "test-password"
+        users_checker.addUser(self.username, self.password)
+        p.registerChecker(users_checker, credentials.IUsernamePassword)
+
         self.factory = ftp.FTPFactory(portal=p,
                                       userAnonymous=self.userAnonymous)
         port = reactor.listenTCP(0, self.factory, interface="127.0.0.1")
@@ -159,6 +169,15 @@ class FTPServerTestCase(unittest.TestCase):
             ['230 Anonymous login ok, access restrictions apply.'],
             chainDeferred=d)
 
+    def _userLogin(self):
+        """Authenticates the FTP client using the test account."""
+        d = self.assertCommandResponse(
+            'USER %s' % (self.username),
+            ['331 Password required for %s.' % (self.username)])
+        return self.assertCommandResponse(
+            'PASS %s' % (self.password),
+            ['230 User logged in, proceed'],
+            chainDeferred=d)
 
 
 class FTPAnonymousTestCase(FTPServerTestCase):
@@ -184,44 +203,64 @@ class FTPAnonymousTestCase(FTPServerTestCase):
             chainDeferred=d)
 
 
-
 class BasicFTPServerTestCase(FTPServerTestCase):
     def testNotLoggedInReply(self):
-        """When not logged in, all commands other than USER and PASS should
-        get NOT_LOGGED_IN errors.
         """
-        commandList = ['CDUP', 'CWD', 'LIST', 'MODE', 'PASV',
-                       'PWD', 'RETR', 'STRU', 'SYST', 'TYPE']
+        When not logged in, most commands other than USER and PASS should
+        get NOT_LOGGED_IN errors, but some can be called before USER and PASS.
+        """
+        loginRequiredCommandList = ['CDUP', 'CWD', 'LIST', 'MODE', 'PASV',
+            'PWD', 'RETR', 'STRU', 'SYST', 'TYPE']
+        loginNotRequiredCommandList = ['FEAT']
 
         # Issue commands, check responses
-        def checkResponse(exception):
+        def checkFailResponse(exception, command):
             failureResponseLines = exception.args[0]
             self.failUnless(failureResponseLines[-1].startswith("530"),
-                            "Response didn't start with 530: %r"
-                            % (failureResponseLines[-1],))
+                            "%s - Response didn't start with 530: %r"
+                            % (command, failureResponseLines[-1],))
+
+        def checkPassResponse(result, command):
+            result = result[0]
+            self.failIf(result.startswith("530"),
+                            "%s - Response start with 530: %r"
+                            % (command, result,))
+
         deferreds = []
-        for command in commandList:
+        for command in loginRequiredCommandList:
             deferred = self.client.queueStringCommand(command)
             self.assertFailure(deferred, ftp.CommandFailed)
-            deferred.addCallback(checkResponse)
+            deferred.addCallback(checkFailResponse, command)
             deferreds.append(deferred)
+
+        for command in loginNotRequiredCommandList:
+            deferred = self.client.queueStringCommand(command)
+            deferred.addCallback(checkPassResponse, command)
+            deferreds.append(deferred)
+
         return defer.DeferredList(deferreds, fireOnOneErrback=True)
 
     def testPASSBeforeUSER(self):
-        """Issuing PASS before USER should give an error."""
+        """
+        Issuing PASS before USER should give an error.
+        """
         return self.assertCommandFailed(
             'PASS foo',
             ["503 Incorrect sequence of commands: "
              "USER required before PASS"])
 
     def testNoParamsForUSER(self):
-        """Issuing USER without a username is a syntax error."""
+        """
+        Issuing USER without a username is a syntax error.
+        """
         return self.assertCommandFailed(
             'USER',
             ['500 Syntax error: USER requires an argument.'])
 
     def testNoParamsForPASS(self):
-        """Issuing PASS without a password is a syntax error."""
+        """
+        Issuing PASS without a password is a syntax error.
+        """
         d = self.client.queueStringCommand('USER foo')
         return self.assertCommandFailed(
             'PASS',
@@ -232,7 +271,9 @@ class BasicFTPServerTestCase(FTPServerTestCase):
         return self._anonymousLogin()
 
     def testQuit(self):
-        """Issuing QUIT should return a 221 message."""
+        """
+        Issuing QUIT should return a 221 message.
+        """
         d = self._anonymousLogin()
         return self.assertCommandResponse(
             'QUIT',
@@ -342,12 +383,56 @@ class BasicFTPServerTestCase(FTPServerTestCase):
         self.serverProtocol.transport.loseConnection()
     testPASV = defer.deferredGenerator(testPASV)
 
-    def testSYST(self):
+    def test_SYST(self):
+        """SYST command will always return UNIX Type: L8"""
         d = self._anonymousLogin()
         self.assertCommandResponse('SYST', ["215 UNIX Type: L8"],
                                    chainDeferred=d)
         return d
 
+    def test_RNFRandRNTO(self):
+        """
+        Sending the RNFR command followed by RNTO, with valid filenames, will
+        perform a successful rename operation.
+        """
+        # Create user home folder with a 'foo' file.
+        self.dirPath.child(self.username).createDirectory()
+        self.dirPath.child(self.username).child('foo').touch()
+
+        d = self._userLogin()
+        self.assertCommandResponse(
+            'RNFR foo',
+            ["350 Requested file action pending further information."],
+            chainDeferred=d)
+        self.assertCommandResponse(
+            'RNTO bar',
+            ["250 Requested File Action Completed OK"],
+            chainDeferred=d)
+
+        def check_rename(result):
+            self.assertTrue(
+                self.dirPath.child(self.username).child('bar').exists())
+            return result
+
+        d.addCallback(check_rename)
+        return d
+
+    def test_RNFRwithoutRNTO(self):
+        """
+        Sending the RNFR command followed by any command other than RNTO
+        should return an error informing users that RNFR should be followed
+        by RNTO.
+        """
+        d = self._anonymousLogin()
+        self.assertCommandResponse(
+            'RNFR foo',
+            ["350 Requested file action pending further information."],
+            chainDeferred=d)
+        self.assertCommandFailed(
+            'OTHER don-tcare',
+            ["503 Incorrect sequence of commands: RNTO required after RNFR"],
+            chainDeferred=d)
+        return d
 
     def test_portRangeForwardError(self):
         """
@@ -399,7 +484,34 @@ class BasicFTPServerTestCase(FTPServerTestCase):
         protocol = self.factory.buildProtocol(None)
         self.assertEqual(portRange, protocol.wrappedProtocol.passivePortRange)
 
+    def testFEAT(self):
+        """
+        When the server receives 'FEAT', it should report the list of supported
+        features. (Additionally, ensure that the server reports various
+        particular features that are supported by all Twisted FTP servers.)
+        """
+        d = self.client.queueStringCommand('FEAT')
+        def gotResponse(responseLines):
+            self.assertEqual('211-Features:', responseLines[0])
+            self.assertTrue(' MDTM' in responseLines)
+            self.assertTrue(' PASV' in responseLines)
+            self.assertTrue(' TYPE A;I' in responseLines)
+            self.assertTrue(' SIZE' in responseLines)
+            self.assertEqual('211 End', responseLines[-1])
+        return d.addCallback(gotResponse)
 
+    def testOPTS(self):
+        """
+        When the server receives 'OPTS something', it should report
+        that the FTP server does not support the option called 'something'.
+        """
+        d = self._anonymousLogin()
+        self.assertCommandFailed(
+            'OPTS something',
+            ["502 Option 'something' not implemented."],
+            chainDeferred=d,
+            )
+        return d
 
 class FTPServerTestCaseAdvancedClient(FTPServerTestCase):
     """
@@ -448,6 +560,37 @@ class FTPServerTestCaseAdvancedClient(FTPServerTestCase):
         d2.addErrback(eb)
         return defer.gatherResults([d1, d2])
 
+    def test_RETRreadError(self):
+        """
+        Any errors during reading a file inside a RETR should be returned to
+        the client.
+        """
+        # Make a failing file reading.
+        class FailingFileReader(ftp._FileReader):
+            def send(self, consumer):
+                return defer.fail(ftp.IsADirectoryError("blah"))
+
+        def failingRETR(a, b):
+            return defer.succeed(FailingFileReader(None))
+
+        # Monkey patch the shell so it returns a file reader that will
+        # fail.
+        self.patch(ftp.FTPAnonymousShell, 'openForReading', failingRETR)
+
+        def check_response(failure):
+            self.flushLoggedErrors()
+            failure.trap(ftp.CommandFailed)
+            self.assertEqual(
+                failure.value.args[0][0],
+                "125 Data connection already open, starting transfer")
+            self.assertEqual(
+                failure.value.args[0][1],
+                "550 blah: is a directory")
+
+        proto = _BufferingProtocol()
+        d = self.client.retrieveFile('failing_file', proto)
+        d.addErrback(check_response)
+        return d
 
 
 class FTPServerPasvDataConnectionTestCase(FTPServerTestCase):

@@ -7,9 +7,9 @@ Interface documentation.
 Maintainer: Itamar Shtull-Trauring
 """
 
+from __future__ import division, absolute_import
+
 from zope.interface import Interface, Attribute
-from twisted.python.deprecate import deprecatedModuleAttribute
-from twisted.python.versions import Version
 
 
 class IAddress(Interface):
@@ -76,12 +76,6 @@ class IResolverSimple(Interface):
         """
 
 class IResolver(IResolverSimple):
-    def lookupRecord(name, cls, type, timeout = 10):
-        """
-        Lookup the records associated with the given name
-        that are of the given type and in the given class.
-        """
-
     def query(query, timeout = 10):
         """
         Interpret and dispatch a query object to the appropriate
@@ -192,49 +186,6 @@ class IResolver(IResolverSimple):
         """
         Perform a zone transfer for the given C{name}.
         """
-
-
-
-class IReactorArbitrary(Interface):
-    """
-    This interface is redundant with L{IReactorFDSet} and is deprecated.
-    """
-    deprecatedModuleAttribute(
-        Version("Twisted", 10, 1, 0),
-        "See IReactorFDSet.",
-        __name__,
-        "IReactorArbitrary")
-
-
-    def listenWith(portType, *args, **kw):
-        """
-        Start an instance of the given C{portType} listening.
-
-        @type portType: type which implements L{IListeningPort}
-
-        @param portType: The object given by C{portType(*args, **kw)} will be
-                         started listening.
-
-        @return: an object which provides L{IListeningPort}.
-        """
-
-
-    def connectWith(connectorType, *args, **kw):
-        """
-        Start an instance of the given C{connectorType} connecting.
-
-        @type connectorType: type which implements L{IConnector}
-
-        @param connectorType: The object given by C{connectorType(*args, **kw)}
-                              will be started connecting.
-
-        @return:  An object which provides L{IConnector}.
-        """
-
-# Alias for IReactorArbitrary so that internal Twisted code can continue to
-# provide the interface without emitting a deprecation warning.  This can be
-# removed when IReactorArbitrary is removed.
-_IReactorArbitrary = IReactorArbitrary
 
 
 
@@ -351,7 +302,7 @@ class IReactorUNIX(Interface):
         """
 
 
-    def listenUNIX(address, factory, backlog=50, mode=0666, wantPID=0):
+    def listenUNIX(address, factory, backlog=50, mode=0o666, wantPID=0):
         """
         Listen on a UNIX socket.
 
@@ -379,7 +330,7 @@ class IReactorUNIXDatagram(Interface):
     Datagram UNIX socket methods.
     """
 
-    def connectUNIXDatagram(address, protocol, maxPacketSize=8192, mode=0666, bindAddress=None):
+    def connectUNIXDatagram(address, protocol, maxPacketSize=8192, mode=0o666, bindAddress=None):
         """
         Connect a client protocol to a datagram UNIX socket.
 
@@ -400,7 +351,7 @@ class IReactorUNIXDatagram(Interface):
         """
 
 
-    def listenUNIXDatagram(address, protocol, maxPacketSize=8192, mode=0666):
+    def listenUNIXDatagram(address, protocol, maxPacketSize=8192, mode=0o666):
         """
         Listen on a datagram UNIX socket.
 
@@ -535,6 +486,7 @@ class IReactorSocket(Interface):
         """
         Add an existing listening I{SOCK_STREAM} socket to the reactor to
         monitor for new connections to accept and handle.
+
         @param fileDescriptor: A file descriptor associated with a socket which
             is already bound to an address and marked as listening.  The socket
             must be set non-blocking.  Any additional flags (for example,
@@ -550,6 +502,37 @@ class IReactorSocket(Interface):
             protocols to handle connections accepted via this socket.
 
         @return: An object providing L{IListeningPort}.
+
+        @raise UnsupportedAddressFamily: If the given address family is not
+            supported by this reactor, or not supported with the given socket
+            type.
+
+        @raise UnsupportedSocketType: If the given socket type is not supported
+            by this reactor, or not supported with the given socket type.
+        """
+
+    def adoptStreamConnection(fileDescriptor, addressFamily, factory):
+        """
+        Add an existing connected I{SOCK_STREAM} socket to the reactor to
+        monitor for data.
+
+        Note that the given factory won't have its C{startFactory} and
+        C{stopFactory} methods called, as there is no sensible time to call
+        them in this situation.
+
+        @param fileDescriptor: A file descriptor associated with a socket which
+            is already connected.  The socket must be set non-blocking.  Any
+            additional flags (for example, close-on-exec) must also be set by
+            application code.  Application code is responsible for closing the
+            file descriptor, which may be done as soon as
+            C{adoptStreamConnection} returns.
+        @type fileDescriptor: C{int}
+
+        @param addressFamily: The address family (or I{domain}) of the socket.
+            For example, L{socket.AF_INET6}.
+
+        @param factory: A L{ServerFactory} instance to use to create a new
+            protocol to handle the connection via this socket.
 
         @raise UnsupportedAddressFamily: If the given address family is not
             supported by this reactor, or not supported with the given socket
@@ -1250,25 +1233,6 @@ class IConsumer(Interface):
 
 
 
-deprecatedModuleAttribute(Version("Twisted", 11, 1, 0),
-    "Please use IConsumer (and IConsumer.unregisterProducer) instead.",
-    __name__, "IFinishableConsumer")
-
-class IFinishableConsumer(IConsumer):
-    """
-    A Consumer for producers that finish.  This interface offers no advantages
-    over L{IConsumer} and is deprecated.  Please use
-    L{IConsumer.unregisterProducer} instead of L{IFinishableConsumer.finish}.
-    """
-
-    def finish():
-        """
-        The producer has finished producing.  This method is deprecated.
-        Please use L{IConsumer.unregisterProducer} instead.
-        """
-
-
-
 class IProducer(Interface):
     """
     A producer produces data for a consumer.
@@ -1772,8 +1736,10 @@ class IProcessTransport(ITransport):
           - an integer, where it represents a POSIX
               signal ID.
 
-        @raise twisted.internet.error.ProcessExitedAlready: The process has
-        already exited.
+        @raise twisted.internet.error.ProcessExitedAlready: If the process has
+            already exited.
+        @raise OSError: If the C{os.kill} call fails with an errno different
+            from C{ESRCH}.
         """
 
 

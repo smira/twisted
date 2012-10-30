@@ -4,17 +4,18 @@
 
 """
 Scheduling utility methods and classes.
-
-@author: Jp Calderone
 """
+
+from __future__ import division, absolute_import
 
 __metaclass__ = type
 
 import time
 
-from zope.interface import implements
+from zope.interface import implementer
 
-from twisted.python import reflect
+from twisted.python import log
+from twisted.python import _reflectpy3 as reflect
 from twisted.python.failure import Failure
 
 from twisted.internet import base, defer
@@ -159,7 +160,7 @@ class LoopingCall:
         assert not self.running, ("Tried to start an already running "
                                   "LoopingCall.")
         if interval < 0:
-            raise ValueError, "interval must be >= 0"
+            raise ValueError("interval must be >= 0")
         self.running = True
         d = self.deferred = defer.Deferred()
         self.starttime = self.clock.seconds()
@@ -241,8 +242,10 @@ class LoopingCall:
 
 
     def __repr__(self):
-        if hasattr(self.f, 'func_name'):
-            func = self.f.func_name
+        if hasattr(self.f, '__qualname__'):
+            func = self.f.__qualname__
+        elif hasattr(self.f, '__name__'):
+            func = self.f.__name__
             if hasattr(self.f, 'im_class'):
                 func = self.f.im_class.__name__ + '.' + func
         else:
@@ -476,7 +479,7 @@ class CooperativeTask(object):
         pausing if the result was a L{defer.Deferred}.
         """
         try:
-            result = self._iterator.next()
+            result = next(self._iterator)
         except StopIteration:
             self._completeWith(TaskDone(), self._iterator)
         except:
@@ -646,6 +649,10 @@ def coiterate(iterator):
     Cooperatively iterate over the given iterator, dividing runtime between it
     and all other iterators which have been passed to this function and not yet
     exhausted.
+
+    @param iterator: the iterator to invoke.
+
+    @return: a Deferred that will fire when the iterator finishes.
     """
     return _theCooperator.coiterate(iterator)
 
@@ -664,13 +671,13 @@ def cooperate(iterator):
 
 
 
+@implementer(IReactorTime)
 class Clock:
     """
     Provide a deterministic, easily-controlled implementation of
     L{IReactorTime.callLater}.  This is commonly useful for writing
     deterministic unit tests for code which schedules events using this API.
     """
-    implements(IReactorTime)
 
     rightNow = 0.0
 
@@ -694,7 +701,7 @@ class Clock:
         """
         Sort the pending calls according to the time they are scheduled.
         """
-        self.calls.sort(lambda a, b: cmp(a.getTime(), b.getTime()))
+        self.calls.sort(key=lambda a: a.getTime())
 
 
     def callLater(self, when, what, *a, **kw):
@@ -778,6 +785,40 @@ def deferLater(clock, delay, callable, *args, **kw):
 
 
 
+def react(main, argv, _reactor=None):
+    """
+    Call C{main} and run the reactor until the L{Deferred} it returns fires.
+
+    This is intended as the way to start up an application with a well-defined
+    completion condition.  Use it to write clients or one-off asynchronous
+    operations.  Prefer this to calling C{reactor.run} directly, as this
+    function will also:
+
+      - Take care to call C{reactor.stop} once and only once, and at the right
+        time.
+      - Log any failures from the C{Deferred} returned by C{main}.
+
+    @param main: A callable which returns a L{Deferred}.  It should take as
+        many arguments as there are elements in the list C{argv}.
+
+    @param argv: A list of arguments to pass to C{main}.
+
+    @param _reactor: An implementation detail to allow easier unit testing.  Do
+        not supply this parameter.
+    """
+    if _reactor is None:
+        from twisted.internet import reactor as _reactor
+    stopping = []
+    _reactor.addSystemEventTrigger('before', 'shutdown', stopping.append, True)
+    finished = main(_reactor, *argv)
+    finished.addErrback(log.err, "main function encountered error")
+    def cbFinish(ignored):
+        if not stopping:
+            _reactor.callWhenRunning(_reactor.stop)
+    finished.addCallback(cbFinish)
+    _reactor.run()
+
+
 __all__ = [
     'LoopingCall',
 
@@ -785,5 +826,4 @@ __all__ = [
 
     'SchedulerStopped', 'Cooperator', 'coiterate',
 
-    'deferLater',
-    ]
+    'deferLater', 'react']

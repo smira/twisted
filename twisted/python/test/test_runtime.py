@@ -5,14 +5,31 @@
 Tests for runtime checks.
 """
 
+from __future__ import division, absolute_import
+
 import sys
 
-from twisted.python.runtime import Platform
-from twisted.trial.unittest import TestCase
+from twisted.trial.unittest import SynchronousTestCase
+
+from twisted.python.runtime import Platform, shortPythonVersion
+
+
+class PythonVersionTests(SynchronousTestCase):
+    """
+    Tests the shortPythonVersion method.
+    """
+
+    def test_shortPythonVersion(self):
+        """
+        Verify if the Python version is returned correctly.
+        """
+        ver = shortPythonVersion().split('.')
+        for i in range(3):
+            self.assertEqual(int(ver[i]), sys.version_info[i])
 
 
 
-class PlatformTests(TestCase):
+class PlatformTests(SynchronousTestCase):
     """
     Tests for the default L{Platform} initializer.
     """
@@ -49,8 +66,36 @@ class PlatformTests(TestCase):
             self.assertTrue(sys.platform.startswith("linux"))
 
 
+    def test_isWinNT(self):
+        """
+        L{Platform.isWinNT} can return only C{0} or C{1} and can not return C{1}
+        if L{Platform.getType} is not C{"win32"}.
+        """
+        platform = Platform()
+        isWinNT = platform.isWinNT()
+        self.assertTrue(isWinNT in (0, 1))
+        if platform.getType() != "win32":
+            self.assertEqual(isWinNT, 0)
 
-class ForeignPlatformTests(TestCase):
+
+    def test_supportsThreads(self):
+        """
+        L{Platform.supportsThreads} returns C{True} if threads can be created in
+        this runtime, C{False} otherwise.
+        """
+        # It's difficult to test both cases of this without faking the threading
+        # module.  Perhaps an adequate test is to just test the behavior with
+        # the current runtime, whatever that happens to be.
+        try:
+            import threading
+        except ImportError:
+            self.assertFalse(Platform().supportsThreads())
+        else:
+            self.assertTrue(Platform().supportsThreads())
+
+
+
+class ForeignPlatformTests(SynchronousTestCase):
     """
     Tests for L{Platform} based overridden initializer values.
     """

@@ -6,6 +6,7 @@ Tests for various parts of L{twisted.web}.
 """
 
 from cStringIO import StringIO
+import zlib
 
 from zope.interface import implements
 from zope.interface.verify import verifyObject
@@ -17,176 +18,10 @@ from twisted.internet.defer import Deferred
 from twisted.web import server, resource, util
 from twisted.internet import defer, interfaces, task
 from twisted.web import iweb, http, http_headers, error
+from twisted.web.static import Data
 from twisted.python import log
 
-
-class DummyRequest:
-    """
-    Represents a dummy or fake request.
-
-    @ivar _finishedDeferreds: C{None} or a C{list} of L{Deferreds} which will
-        be called back with C{None} when C{finish} is called or which will be
-        errbacked if C{processingFailed} is called.
-
-    @type headers: C{dict}
-    @ivar headers: A mapping of header name to header value for all request
-        headers.
-
-    @type outgoingHeaders: C{dict}
-    @ivar outgoingHeaders: A mapping of header name to header value for all
-        response headers.
-
-    @type responseCode: C{int}
-    @ivar responseCode: The response code which was passed to
-        C{setResponseCode}.
-
-    @type written: C{list} of C{str}
-    @ivar written: The bytes which have been written to the request.
-    """
-    uri = 'http://dummy/'
-    method = 'GET'
-    client = None
-
-    def registerProducer(self, prod,s):
-        self.go = 1
-        while self.go:
-            prod.resumeProducing()
-
-    def unregisterProducer(self):
-        self.go = 0
-
-
-    def __init__(self, postpath, session=None):
-        self.sitepath = []
-        self.written = []
-        self.finished = 0
-        self.postpath = postpath
-        self.prepath = []
-        self.session = None
-        self.protoSession = session or server.Session(0, self)
-        self.args = {}
-        self.outgoingHeaders = {}
-        self.responseHeaders = http_headers.Headers()
-        self.responseCode = None
-        self.headers = {}
-        self._finishedDeferreds = []
-
-
-    def getHeader(self, name):
-        """
-        Retrieve the value of a request header.
-
-        @type name: C{str}
-        @param name: The name of the request header for which to retrieve the
-            value.  Header names are compared case-insensitively.
-
-        @rtype: C{str} or L{NoneType}
-        @return: The value of the specified request header.
-        """
-        return self.headers.get(name.lower(), None)
-
-
-    def setHeader(self, name, value):
-        """TODO: make this assert on write() if the header is content-length
-        """
-        self.outgoingHeaders[name.lower()] = value
-
-    def getSession(self):
-        if self.session:
-            return self.session
-        assert not self.written, "Session cannot be requested after data has been written."
-        self.session = self.protoSession
-        return self.session
-
-
-    def render(self, resource):
-        """
-        Render the given resource as a response to this request.
-
-        This implementation only handles a few of the most common behaviors of
-        resources.  It can handle a render method that returns a string or
-        C{NOT_DONE_YET}.  It doesn't know anything about the semantics of
-        request methods (eg HEAD) nor how to set any particular headers.
-        Basically, it's largely broken, but sufficient for some tests at least.
-        It should B{not} be expanded to do all the same stuff L{Request} does.
-        Instead, L{DummyRequest} should be phased out and L{Request} (or some
-        other real code factored in a different way) used.
-        """
-        result = resource.render(self)
-        if result is server.NOT_DONE_YET:
-            return
-        self.write(result)
-        self.finish()
-
-
-    def write(self, data):
-        self.written.append(data)
-
-    def notifyFinish(self):
-        """
-        Return a L{Deferred} which is called back with C{None} when the request
-        is finished.  This will probably only work if you haven't called
-        C{finish} yet.
-        """
-        finished = Deferred()
-        self._finishedDeferreds.append(finished)
-        return finished
-
-
-    def finish(self):
-        """
-        Record that the request is finished and callback and L{Deferred}s
-        waiting for notification of this.
-        """
-        self.finished = self.finished + 1
-        if self._finishedDeferreds is not None:
-            observers = self._finishedDeferreds
-            self._finishedDeferreds = None
-            for obs in observers:
-                obs.callback(None)
-
-
-    def processingFailed(self, reason):
-        """
-        Errback and L{Deferreds} waiting for finish notification.
-        """
-        if self._finishedDeferreds is not None:
-            observers = self._finishedDeferreds
-            self._finishedDeferreds = None
-            for obs in observers:
-                obs.errback(reason)
-
-
-    def addArg(self, name, value):
-        self.args[name] = [value]
-
-
-    def setResponseCode(self, code, message=None):
-        """
-        Set the HTTP status response code, but takes care that this is called
-        before any data is written.
-        """
-        assert not self.written, "Response code cannot be set after data has been written: %s." % "@@@@".join(self.written)
-        self.responseCode = code
-        self.responseMessage = message
-
-
-    def setLastModified(self, when):
-        assert not self.written, "Last-Modified cannot be set after data has been written: %s." % "@@@@".join(self.written)
-
-
-    def setETag(self, tag):
-        assert not self.written, "ETag cannot be set after data has been written: %s." % "@@@@".join(self.written)
-
-
-    def getClientIP(self):
-        """
-        Return the IPv4 address of the client which made this request, if there
-        is one, otherwise C{None}.
-        """
-        if isinstance(self.client, IPv4Address):
-            return self.client.host
-        return None
+from twisted.web.test.requesthelper import DummyChannel, DummyRequest
 
 
 class ResourceTestCase(unittest.TestCase):
@@ -216,49 +51,6 @@ class SimpleResource(resource.Resource):
             return ''
         else:
             return "correct"
-
-
-class DummyChannel:
-    class TCP:
-        port = 80
-        disconnected = False
-
-        def __init__(self):
-            self.written = StringIO()
-            self.producers = []
-
-        def getPeer(self):
-            return IPv4Address("TCP", '192.168.1.1', 12344)
-
-        def write(self, bytes):
-            assert isinstance(bytes, str)
-            self.written.write(bytes)
-
-        def writeSequence(self, iovec):
-            map(self.write, iovec)
-
-        def getHost(self):
-            return IPv4Address("TCP", '10.0.0.1', self.port)
-
-        def registerProducer(self, producer, streaming):
-            self.producers.append((producer, streaming))
-
-        def loseConnection(self):
-            self.disconnected = True
-
-
-    class SSL(TCP):
-        implements(interfaces.ISSLTransport)
-
-    site = server.Site(resource.Resource())
-
-    def __init__(self):
-        self.transport = self.TCP()
-
-
-    def requestDone(self, request):
-        pass
-
 
 
 class SiteTest(unittest.TestCase):
@@ -587,27 +379,6 @@ class ConditionalTest(unittest.TestCase):
 
 
 
-
-from twisted.web import google
-class GoogleTestCase(unittest.TestCase):
-    def testCheckGoogle(self):
-        raise unittest.SkipTest("no violation of google ToS")
-        d = google.checkGoogle('site:www.twistedmatrix.com twisted')
-        d.addCallback(self.assertEqual, 'http://twistedmatrix.com/')
-        return d
-
-
-    def test_deprecated(self):
-        """
-        Google module is deprecated since Twisted 11.1.0
-        """
-        from twisted.web import google
-        warnings = self.flushWarnings(offendingFunctions=[self.test_deprecated])
-        self.assertEqual(len(warnings), 1)
-        self.assertEqual(warnings[0]['category'], DeprecationWarning)
-
-
-
 class RequestTests(unittest.TestCase):
     """
     Tests for the HTTP request class, L{server.Request}.
@@ -707,6 +478,130 @@ class RequestTests(unittest.TestCase):
         request.gotLength(0)
         request.requestReceived('GET', '/foo%2Fbar', 'HTTP/1.0')
         self.assertEqual(request.prePathURL(), 'http://example.com/foo%2Fbar')
+
+
+
+class GzipEncoderTests(unittest.TestCase):
+
+    def setUp(self):
+        self.channel = DummyChannel()
+        staticResource = Data("Some data", "text/plain")
+        wrapped = resource.EncodingResourceWrapper(
+            staticResource, [server.GzipEncoderFactory()])
+        self.channel.site.resource.putChild("foo", wrapped)
+
+
+    def test_interfaces(self):
+        """
+        L{server.GzipEncoderFactory} implements the
+        L{iweb._IRequestEncoderFactory} and its C{encoderForRequest} returns an
+        instance of L{server._GzipEncoder} which implements
+        L{iweb._IRequestEncoder}.
+        """
+        request = server.Request(self.channel, False)
+        request.gotLength(0)
+        request.requestHeaders.setRawHeaders("Accept-Encoding",
+                                             ["gzip,deflate"])
+        factory = server.GzipEncoderFactory()
+        self.assertTrue(verifyObject(iweb._IRequestEncoderFactory, factory))
+
+        encoder = factory.encoderForRequest(request)
+        self.assertTrue(verifyObject(iweb._IRequestEncoder, encoder))
+
+
+    def test_encoding(self):
+        """
+        If the client request passes a I{Accept-Encoding} header which mentions
+        gzip, L{server._GzipEncoder} automatically compresses the data.
+        """
+        request = server.Request(self.channel, False)
+        request.gotLength(0)
+        request.requestHeaders.setRawHeaders("Accept-Encoding",
+                                             ["gzip,deflate"])
+        request.requestReceived('GET', '/foo', 'HTTP/1.0')
+        data = self.channel.transport.written.getvalue()
+        self.assertNotIn("Content-Length", data)
+        self.assertIn("Content-Encoding: gzip\r\n", data)
+        body = data[data.find("\r\n\r\n") + 4:]
+        self.assertEqual("Some data",
+                          zlib.decompress(body, 16 + zlib.MAX_WBITS))
+
+
+    def test_nonEncoding(self):
+        """
+        L{server.GzipEncoderFactory} doesn't return a L{server._GzipEncoder} if
+        the I{Accept-Encoding} header doesn't mention gzip support.
+        """
+        request = server.Request(self.channel, False)
+        request.gotLength(0)
+        request.requestHeaders.setRawHeaders("Accept-Encoding",
+                                             ["foo,bar"])
+        request.requestReceived('GET', '/foo', 'HTTP/1.0')
+        data = self.channel.transport.written.getvalue()
+        self.assertIn("Content-Length", data)
+        self.assertNotIn("Content-Encoding: gzip\r\n", data)
+        body = data[data.find("\r\n\r\n") + 4:]
+        self.assertEqual("Some data", body)
+
+
+    def test_multipleAccept(self):
+        """
+        If there are multiple I{Accept-Encoding} header,
+        L{server.GzipEncoderFactory} reads them properly to detect if gzip is
+        supported.
+        """
+        request = server.Request(self.channel, False)
+        request.gotLength(0)
+        request.requestHeaders.setRawHeaders("Accept-Encoding",
+                                             ["deflate", "gzip"])
+        request.requestReceived('GET', '/foo', 'HTTP/1.0')
+        data = self.channel.transport.written.getvalue()
+        self.assertNotIn("Content-Length", data)
+        self.assertIn("Content-Encoding: gzip\r\n", data)
+        body = data[data.find("\r\n\r\n") + 4:]
+        self.assertEqual("Some data",
+                         zlib.decompress(body, 16 + zlib.MAX_WBITS))
+
+
+    def test_alreadyEncoded(self):
+        """
+        If the content is already encoded and the I{Content-Encoding} header is
+        set, L{server.GzipEncoderFactory} properly appends gzip to it.
+        """
+        request = server.Request(self.channel, False)
+        request.gotLength(0)
+        request.requestHeaders.setRawHeaders("Accept-Encoding",
+                                             ["deflate", "gzip"])
+        request.responseHeaders.setRawHeaders("Content-Encoding",
+                                             ["deflate"])
+        request.requestReceived('GET', '/foo', 'HTTP/1.0')
+        data = self.channel.transport.written.getvalue()
+        self.assertNotIn("Content-Length", data)
+        self.assertIn("Content-Encoding: deflate,gzip\r\n", data)
+        body = data[data.find("\r\n\r\n") + 4:]
+        self.assertEqual("Some data",
+                         zlib.decompress(body, 16 + zlib.MAX_WBITS))
+
+
+    def test_multipleEncodingLines(self):
+        """
+        If there are several I{Content-Encoding} headers,
+        L{server.GzipEncoderFactory} normalizes it and appends gzip to the
+        field value.
+        """
+        request = server.Request(self.channel, False)
+        request.gotLength(0)
+        request.requestHeaders.setRawHeaders("Accept-Encoding",
+                                             ["deflate", "gzip"])
+        request.responseHeaders.setRawHeaders("Content-Encoding",
+                                             ["foo", "bar"])
+        request.requestReceived('GET', '/foo', 'HTTP/1.0')
+        data = self.channel.transport.written.getvalue()
+        self.assertNotIn("Content-Length", data)
+        self.assertIn("Content-Encoding: foo,bar,gzip\r\n", data)
+        body = data[data.find("\r\n\r\n") + 4:]
+        self.assertEqual("Some data",
+                         zlib.decompress(body, 16 + zlib.MAX_WBITS))
 
 
 
@@ -888,7 +783,7 @@ class AllowedMethodsTest(unittest.TestCase):
         res = GettableResource()
         allowedMethods = resource._computeAllowedMethods(res)
         self.assertEqual(set(allowedMethods),
-                          set(['GET', 'HEAD', 'fred_render_ethel'])) 
+                          set(['GET', 'HEAD', 'fred_render_ethel']))
 
 
     def test_notAllowed(self):

@@ -9,8 +9,8 @@ Distutils installer for Twisted.
 import os
 import sys
 
-if sys.version_info < (2, 5):
-    print >>sys.stderr, "You must use at least Python 2.5 for Twisted"
+if sys.version_info < (2, 6):
+    print >>sys.stderr, "You must use at least Python 2.6 for Twisted"
     sys.exit(3)
 
 if os.path.exists('twisted'):
@@ -41,15 +41,17 @@ extensions = [
               libraries=["ws2_32"],
               condition=lambda _: _isCPython and sys.platform == "win32"),
 
-    Extension("twisted.python._initgroups",
-              ["twisted/python/_initgroups.c"]),
     Extension("twisted.python.sendmsg",
               sources=["twisted/python/sendmsg.c"],
               condition=lambda _: sys.platform != "win32"),
-    Extension("twisted.internet._sigchld",
-              ["twisted/internet/_sigchld.c"],
-              condition=lambda _: sys.platform != "win32"),
 ]
+
+if sys.version_info[:2] <= (2, 6):
+    extensions.append(
+        Extension(
+            "twisted.python._initgroups",
+            ["twisted/python/_initgroups.c"]))
+
 
 # Figure out which plugins to include: all plugins except subproject ones
 subProjectsPlugins = ['twisted_%s.py' % subProject

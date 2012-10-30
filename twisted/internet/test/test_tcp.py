@@ -6,28 +6,30 @@ Tests for implementations of L{IReactorTCP} and the TCP parts of
 L{IReactorSocket}.
 """
 
+from __future__ import division, absolute_import
+
 __metaclass__ = type
 
 import socket, errno
 
-from zope.interface import implements
+from zope.interface import implementer
 
+from twisted.python.compat import _PY3
 from twisted.python.runtime import platform
 from twisted.python.failure import Failure
 from twisted.python import log
 
 from twisted.trial.unittest import SkipTest, TestCase
-from twisted.internet.test.reactormixins import ReactorBuilder, EndpointCreator
-from twisted.internet.test.reactormixins import ConnectableProtocol
-from twisted.internet.test.reactormixins import runProtocolsWithReactor
-from twisted.internet.error import ConnectionLost, UserError, ConnectionRefusedError
-from twisted.internet.error import ConnectionDone, ConnectionAborted
+from twisted.internet.test.reactormixins import ReactorBuilder
+from twisted.internet.error import (
+    ConnectionLost, UserError, ConnectionRefusedError, ConnectionDone,
+    ConnectionAborted)
 from twisted.internet.interfaces import (
-    ILoggingContext, IConnector, IReactorFDSet, IReactorSocket)
+    ILoggingContext, IConnector, IReactorFDSet, IReactorSocket, IReactorTCP)
 from twisted.internet.address import IPv4Address, IPv6Address
 from twisted.internet.defer import (
     Deferred, DeferredList, maybeDeferred, gatherResults)
-from twisted.internet.endpoints import (
+from twisted.internet._endpointspy3 import (
     TCP4ServerEndpoint, TCP4ClientEndpoint)
 from twisted.internet.protocol import ServerFactory, ClientFactory, Protocol
 from twisted.internet.interfaces import (
@@ -35,7 +37,8 @@ from twisted.internet.interfaces import (
 from twisted.internet.tcp import Connection, Server, _resolveIPv6
 
 from twisted.internet.test.connectionmixins import (
-    LogObserverMixin, ConnectionTestsMixin, TCPClientTestsMixin, findFreePort)
+    LogObserverMixin, ConnectionTestsMixin, TCPClientTestsMixin, findFreePort,
+    ConnectableProtocol, EndpointCreator, runProtocolsWithReactor)
 from twisted.internet.test.test_core import ObjectModelIntegrationMixin
 from twisted.test.test_tcp import MyClientFactory, MyServerFactory
 from twisted.test.test_tcp import ClosingFactory, ClientStartStopFactory
@@ -45,12 +48,16 @@ try:
 except ImportError:
     useSSL = False
 else:
-    from twisted.internet.ssl import ClientContextFactory
-    useSSL = True
+    if _PY3:
+        # Re-enable in ticket #6142:
+        useSSL = False
+    else:
+        from twisted.internet.ssl import ClientContextFactory
+        useSSL = True
 
 try:
     socket.socket(socket.AF_INET6, socket.SOCK_STREAM).close()
-except socket.error, e:
+except socket.error as e:
     ipv6Skip = str(e)
 else:
     ipv6Skip = None
@@ -88,7 +95,17 @@ def getLinkLocalIPv6Address():
 
 
 
-def connect(client, (host, port)):
+def connect(client, destination):
+    """
+    Connect a socket to the given destination.
+
+    @param client: A C{socket.socket}.
+
+    @param destination: A tuple of (host, port). The host is a C{str}, the
+        port a C{int}. If the C{host} is an IPv6 IP, the address is resolved
+        using C{getaddrinfo} and the first version found is used.
+    """
+    (host, port) = destination
     if '%' in host or ':' in host:
         address = socket.getaddrinfo(host, port)[0][4]
     else:
@@ -167,14 +184,14 @@ class TestFakeSocket(TestCase):
     """
 
     def test_blocking(self):
-        skt = FakeSocket("someData")
+        skt = FakeSocket(b"someData")
         skt.setblocking(0)
         self.assertEqual(skt.blocking, 0)
 
 
     def test_recv(self):
-        skt = FakeSocket("someData")
-        self.assertEqual(skt.recv(10), "someData")
+        skt = FakeSocket(b"someData")
+        self.assertEqual(skt.recv(10), b"someData")
 
 
     def test_send(self):
@@ -182,10 +199,10 @@ class TestFakeSocket(TestCase):
         L{FakeSocket.send} accepts the entire string passed to it, adds it to
         its send buffer, and returns its length.
         """
-        skt = FakeSocket("")
-        count = skt.send("foo")
+        skt = FakeSocket(b"")
+        count = skt.send(b"foo")
         self.assertEqual(count, 3)
-        self.assertEqual(skt.sendBuffer, ["foo"])
+        self.assertEqual(skt.sendBuffer, [b"foo"])
 
 
 
@@ -202,12 +219,12 @@ class FakeProtocol(Protocol):
 
 
 
+@implementer(IReactorFDSet)
 class _FakeFDSetReactor(object):
     """
     A no-op implementation of L{IReactorFDSet}, which ignores all adds and
     removes.
     """
-    implements(IReactorFDSet)
 
     addReader = addWriter = removeReader = removeWriter = (
         lambda self, desc: None)
@@ -222,7 +239,7 @@ class TCPServerTests(TestCase):
         self.reactor = _FakeFDSetReactor()
         class FakePort(object):
             _realPortNumber = 3
-        self.skt = FakeSocket("")
+        self.skt = FakeSocket(b"")
         self.protocol = Protocol()
         self.server = Server(
             self.skt, self.protocol, ("", 0), FakePort(), None, self.reactor)
@@ -235,7 +252,7 @@ class TCPServerTests(TestCase):
         """
         self.server.connectionLost(
             Failure(Exception("Simulated lost connection")))
-        self.server.write("hello world")
+        self.server.write(b"hello world")
         self.assertEqual(self.skt.sendBuffer, [])
 
 
@@ -255,7 +272,7 @@ class TCPServerTests(TestCase):
         """
         self.server.connectionLost(
             Failure(Exception("Simulated lost connection")))
-        self.server.writeSequence(["hello world"])
+        self.server.writeSequence([b"hello world"])
         self.assertEqual(self.skt.sendBuffer, [])
 
 
@@ -278,7 +295,7 @@ class TCPConnectionTests(TestCase):
         When an L{IProtocol} implementation that returns a value from its
         C{dataReceived} method, a deprecated warning is emitted.
         """
-        skt = FakeSocket("someData")
+        skt = FakeSocket(b"someData")
         protocol = FakeProtocol()
         conn = Connection(skt, protocol)
         conn.doRead()
@@ -297,7 +314,7 @@ class TCPConnectionTests(TestCase):
         The C{TLS} attribute of a L{Connection} instance is C{False} before
         L{Connection.startTLS} is called.
         """
-        skt = FakeSocket("")
+        skt = FakeSocket(b"")
         protocol = FakeProtocol()
         conn = Connection(skt, protocol)
         self.assertFalse(conn.TLS)
@@ -308,7 +325,7 @@ class TCPConnectionTests(TestCase):
         The C{TLS} attribute of a L{Connection} instance is C{True} after
         L{Connection.startTLS} is called.
         """
-        skt = FakeSocket("")
+        skt = FakeSocket(b"")
         protocol = FakeProtocol()
         conn = Connection(skt, protocol, reactor=_FakeFDSetReactor())
         conn._tlsClientDefault = True
@@ -362,10 +379,12 @@ class TCP6Creator(TCPCreator):
 
 
 class TCPClientTestsBase(ReactorBuilder, ConnectionTestsMixin,
-                            TCPClientTestsMixin):
+                         TCPClientTestsMixin):
     """
     Base class for builders defining tests related to L{IReactorTCP.connectTCP}.
     """
+    requiredInterfaces = (IReactorTCP,)
+
     port = 1234
 
     @property
@@ -379,7 +398,8 @@ class TCPClientTestsBase(ReactorBuilder, ConnectionTestsMixin,
 
 class TCP4ClientTestsBuilder(TCPClientTestsBase):
     """
-    Builder configured with IPv4 parameters for tests related to L{IReactorTCP.connectTCP}.
+    Builder configured with IPv4 parameters for tests related to
+    L{IReactorTCP.connectTCP}.
     """
     fakeDomainName = 'some-fake.domain.example.com'
     family = socket.AF_INET
@@ -391,15 +411,14 @@ class TCP4ClientTestsBuilder(TCPClientTestsBase):
 
 class TCP6ClientTestsBuilder(TCPClientTestsBase):
     """
-    Builder configured with IPv6 parameters for tests related to L{IReactorTCP.connectTCP}.
+    Builder configured with IPv6 parameters for tests related to
+    L{IReactorTCP.connectTCP}.
     """
-
     if ipv6Skip:
-        skip = "Platform does not support ipv6"
+        skip = ipv6Skip
 
     family = socket.AF_INET6
     addressClass = IPv6Address
-
 
     def setUp(self):
         # Only create this object here, so that it won't be created if tests
@@ -416,6 +435,10 @@ class TCP6ClientTestsBuilder(TCPClientTestsBase):
 
 
 class TCPConnectorTestsBuilder(ReactorBuilder):
+    """
+    Tests for the L{IConnector} provider returned by L{IReactorTCP.connectTCP}.
+    """
+    requiredInterfaces = (IReactorTCP,)
 
     def test_connectorIdentity(self):
         """
@@ -538,7 +561,7 @@ class TCP6ConnectorTestsBuilder(TCPConnectorTestsBuilder):
     addressClass = IPv6Address
 
     if ipv6Skip:
-        skip = "Platform does not support ipv6"
+        skip = ipv6Skip
 
     def setUp(self):
         self.interface = getLinkLocalIPv6Address()
@@ -574,10 +597,12 @@ class StreamTransportTestsMixin(LogObserverMixin):
         """
         loggedMessages = self.observe()
         reactor = self.buildReactor()
+
+        @implementer(ILoggingContext)
         class SomeFactory(ServerFactory):
-            implements(ILoggingContext)
             def logPrefix(self):
                 return "Crazy Factory"
+
         factory = SomeFactory()
         p = self.getListeningPort(reactor, factory)
         expectedMessage = self.getExpectedStartListeningLogMessage(
@@ -677,6 +702,8 @@ class TCPPortTestsMixin(object):
     """
     Tests for L{IReactorTCP.listenTCP}
     """
+    requiredInterfaces = (IReactorTCP,)
+
     def getExpectedStartListeningLogMessage(self, port, factory):
         """
         Get the message expected to be logged when a TCP port starts listening.
@@ -769,7 +796,8 @@ class TCPPortTestsMixin(object):
         client.setblocking(False)
         try:
             connect(client, (port.getHost().host, port.getHost().port))
-        except socket.error, (errnum, message):
+        except socket.error as e:
+            errnum, message = e.args
             self.assertIn(errnum, (errno.EINPROGRESS, errno.EWOULDBLOCK))
 
         self.runReactor(reactor)
@@ -851,7 +879,8 @@ class TCPPortTestsMixin(object):
         client.setblocking(False)
         try:
             connect(client, (port.getHost().host, port.getHost().port))
-        except socket.error, (errnum, message):
+        except socket.error as e:
+            errnum, message = e.args
             self.assertIn(errnum, (errno.EINPROGRESS, errno.EWOULDBLOCK))
         self.runReactor(reactor)
         return factory.address
@@ -972,7 +1001,7 @@ class StopStartReadingProtocol(Protocol):
     """
 
     def connectionMade(self):
-        self.data = ''
+        self.data = b''
         self.pauseResumeProducing(3)
 
 
@@ -1002,6 +1031,7 @@ class TCPConnectionTestsBuilder(ReactorBuilder):
     """
     Builder defining tests relating to L{twisted.internet.tcp.Connection}.
     """
+    requiredInterfaces = (IReactorTCP,)
 
     def test_stopStartReading(self):
         """
@@ -1029,7 +1059,7 @@ class TCPConnectionTestsBuilder(ReactorBuilder):
             self.assertTrue(protos[0])
             self.assertTrue(protos[1])
             protos = protos[0][1], protos[1][1]
-            protos[0].transport.write('x' * (2 * 4096) + 'y' * (2 * 4096))
+            protos[0].transport.write(b'x' * (2 * 4096) + b'y' * (2 * 4096))
             return (sf.stop.addCallback(cleanup, protos, port)
                            .addCallback(lambda ign: reactor.stop()))
 
@@ -1038,7 +1068,7 @@ class TCPConnectionTestsBuilder(ReactorBuilder):
             Make sure IOCPReactor didn't start several WSARecv operations
             that clobbered each other's results.
             """
-            self.assertEqual(data, 'x'*(2*4096) + 'y'*(2*4096),
+            self.assertEqual(data, b'x'*(2*4096) + b'y'*(2*4096),
                                  'did not get the right data')
             return DeferredList([
                     maybeDeferred(protos[0].transport.loseConnection),
@@ -1049,8 +1079,8 @@ class TCPConnectionTestsBuilder(ReactorBuilder):
         cf = ClientFactory()
         cf.protocol = Protocol
         d = DeferredList([cc.connect(cf), sf.ready]).addCallback(proceed, p)
+        d.addErrback(log.err)
         self.runReactor(reactor)
-        return d
 
 
     def test_connectionLostAfterPausedTransport(self):
@@ -1088,7 +1118,7 @@ class TCPConnectionTestsBuilder(ReactorBuilder):
 
         class Client(ConnectableProtocol):
             def connectionMade(self):
-                self.transport.write("some bytes for you")
+                self.transport.write(b"some bytes for you")
                 self.transport.loseConnection()
 
         pauser = Pauser()
@@ -1104,8 +1134,8 @@ class TCPConnectionTestsBuilder(ReactorBuilder):
 
         This rather obscure case used to fail (see ticket #3037).
         """
+        @implementer(IHalfCloseableProtocol)
         class ListenerProtocol(ConnectableProtocol):
-            implements(IHalfCloseableProtocol)
 
             def readConnectionLost(self):
                 self.transport.loseWriteConnection()
@@ -1123,27 +1153,11 @@ class TCPConnectionTestsBuilder(ReactorBuilder):
 
 
 
-class WriteSequenceTests(ReactorBuilder):
+class WriteSequenceTestsMixin(object):
     """
     Test for L{twisted.internet.abstract.FileDescriptor.writeSequence}.
-
-    @ivar client: the connected client factory to be used in tests.
-    @type client: L{MyClientFactory}
-
-    @ivar server: the listening server factory to be used in tests.
-    @type server: L{MyServerFactory}
     """
-    def setUp(self):
-        server = MyServerFactory()
-        server.protocolConnectionMade = Deferred()
-        server.protocolConnectionLost = Deferred()
-        self.server = server
-
-        client = MyClientFactory()
-        client.protocolConnectionMade = Deferred()
-        client.protocolConnectionLost = Deferred()
-        self.client = client
-
+    requiredInterfaces = (IReactorTCP,)
 
     def setWriteBufferSize(self, transport, value):
         """
@@ -1156,39 +1170,28 @@ class WriteSequenceTests(ReactorBuilder):
             transport.bufferSize = value
 
 
-    def test_withoutWrite(self):
+    def test_writeSequeceWithoutWrite(self):
         """
         C{writeSequence} sends the data even if C{write} hasn't been called.
         """
-        client, server = self.client, self.server
+
+        def connected(protocols):
+            client, server, port = protocols
+
+            def dataReceived(data):
+                log.msg("data received: %r" % data)
+                self.assertEqual(data, b"Some sequence splitted")
+                client.transport.loseConnection()
+
+            server.dataReceived = dataReceived
+
+            client.transport.writeSequence([b"Some ", b"sequence ", b"splitted"])
+
         reactor = self.buildReactor()
-
-        port = reactor.listenTCP(0, server)
-
-        def dataReceived(data):
-            log.msg("data received: %r" % data)
-            self.assertEquals(data, "Some sequence splitted")
-            client.protocol.transport.loseConnection()
-
-        def clientConnected(proto):
-            log.msg("client connected %s" % proto)
-            proto.transport.writeSequence(["Some ", "sequence ", "splitted"])
-
-        def serverConnected(proto):
-            log.msg("server connected %s" % proto)
-            proto.dataReceived = dataReceived
-
-        d1 = client.protocolConnectionMade.addCallback(clientConnected)
-        d2 = server.protocolConnectionMade.addCallback(serverConnected)
-        d3 = server.protocolConnectionLost
-        d4 = client.protocolConnectionLost
-        d = gatherResults([d1, d2, d3, d4])
-        def stop(result):
-            reactor.stop()
-            return result
-        d.addBoth(stop)
-
-        reactor.connectTCP("127.0.0.1", port.getHost().port, client)
+        d = self.getConnectedClientAndServer(reactor, "127.0.0.1",
+                                             socket.AF_INET)
+        d.addCallback(connected)
+        d.addErrback(log.err)
         self.runReactor(reactor)
 
 
@@ -1197,72 +1200,23 @@ class WriteSequenceTests(ReactorBuilder):
         C{writeSequence} with an element in the sequence of type unicode raises
         C{TypeError}.
         """
-        client, server = self.client, self.server
-        reactor = self.buildReactor()
 
-        port = reactor.listenTCP(0, server)
+        def connected(protocols):
+            client, server, port = protocols
 
-        reactor.connectTCP("127.0.0.1", port.getHost().port, client)
-
-        def serverConnected(proto):
-            log.msg("server connected %s" % proto)
             exc = self.assertRaises(
                 TypeError,
-                proto.transport.writeSequence, [u"Unicode is not kosher"])
-            self.assertEquals(str(exc), "Data must not be unicode")
+                server.transport.writeSequence, [u"Unicode is not kosher"])
 
-        d = server.protocolConnectionMade.addCallback(serverConnected)
-        d.addErrback(log.err)
-        d.addCallback(lambda ignored: reactor.stop())
+            self.assertEqual(str(exc), "Data must not be unicode")
 
-        self.runReactor(reactor)
+            server.transport.loseConnection()
 
-
-    def _producerTest(self, clientConnected):
-        """
-        Helper for testing producers which call C{writeSequence}.  This will set
-        up a connection which a producer can use.  It returns after the
-        connection is closed.
-
-        @param clientConnected: A callback which will be invoked with a client
-            protocol after a connection is setup.  This is responsible for
-            setting up some sort of producer.
-        """
         reactor = self.buildReactor()
-
-        port = reactor.listenTCP(0, self.server)
-
-        # The following could probably all be much simpler, but for #5285.
-
-        # First let the server notice the connection
-        d1 = self.server.protocolConnectionMade
-
-        # Grab the client connection Deferred now though, so we don't lose it if
-        # the client connects before the server.
-        d2 = self.client.protocolConnectionMade
-
-        def serverConnected(proto):
-            # Now take action as soon as the client is connected
-            d2.addCallback(clientConnected)
-            return d2
-        d1.addCallback(serverConnected)
-
-        d3 = self.server.protocolConnectionLost
-        d4 = self.client.protocolConnectionLost
-
-        # After the client is connected and does its producer stuff, wait for
-        # the disconnection events.
-        def didProducerActions(ignored):
-            return gatherResults([d3, d4])
-        d1.addCallback(didProducerActions)
-
-        def stop(result):
-            reactor.stop()
-            return result
-        d1.addBoth(stop)
-
-        reactor.connectTCP("127.0.0.1", port.getHost().port, self.client)
-
+        d = self.getConnectedClientAndServer(reactor, "127.0.0.1",
+                                             socket.AF_INET)
+        d.addCallback(connected)
+        d.addErrback(log.err)
         self.runReactor(reactor)
 
 
@@ -1271,10 +1225,11 @@ class WriteSequenceTests(ReactorBuilder):
         C{writeSequence} pauses its streaming producer if too much data is
         buffered, and then resumes it.
         """
-        client, server = self.client, self.server
-
+        @implementer(IPushProducer)
         class SaveActionProducer(object):
-            implements(IPushProducer)
+            client = None
+            server = None
+
             def __init__(self):
                 self.actions = []
 
@@ -1284,31 +1239,39 @@ class WriteSequenceTests(ReactorBuilder):
             def resumeProducing(self):
                 self.actions.append("resume")
                 # Unregister the producer so the connection can close
-                client.protocol.transport.unregisterProducer()
+                self.client.transport.unregisterProducer()
                 # This is why the code below waits for the server connection
-                # first - so we have it to close here.  We close the server side
-                # because win32evenreactor cannot reliably observe us closing
-                # the client side (#5285).
-                server.protocol.transport.loseConnection()
+                # first - so we have it to close here.  We close the server
+                # side because win32evenreactor cannot reliably observe us
+                # closing the client side (#5285).
+                self.server.transport.loseConnection()
 
             def stopProducing(self):
                 self.actions.append("stop")
 
         producer = SaveActionProducer()
 
-        def clientConnected(proto):
-            # Register a streaming producer and verify that it gets paused after
-            # it writes more than the local send buffer can hold.
-            proto.transport.registerProducer(producer, True)
-            self.assertEquals(producer.actions, [])
-            self.setWriteBufferSize(proto.transport, 500)
-            proto.transport.writeSequence(["x" * 50] * 20)
-            self.assertEquals(producer.actions, ["pause"])
+        def connected(protocols):
+            client, server = protocols[:2]
+            producer.client = client
+            producer.server = server
+            # Register a streaming producer and verify that it gets paused
+            # after it writes more than the local send buffer can hold.
+            client.transport.registerProducer(producer, True)
+            self.assertEqual(producer.actions, [])
+            self.setWriteBufferSize(client.transport, 500)
+            client.transport.writeSequence([b"x" * 50] * 20)
+            self.assertEqual(producer.actions, ["pause"])
 
-        self._producerTest(clientConnected)
+        reactor = self.buildReactor()
+        d = self.getConnectedClientAndServer(reactor, "127.0.0.1",
+                                             socket.AF_INET)
+        d.addCallback(connected)
+        d.addErrback(log.err)
+        self.runReactor(reactor)
         # After the send buffer gets a chance to empty out a bit, the producer
         # should be resumed.
-        self.assertEquals(producer.actions, ["pause", "resume"])
+        self.assertEqual(producer.actions, ["pause", "resume"])
 
 
     def test_nonStreamingProducer(self):
@@ -1316,37 +1279,228 @@ class WriteSequenceTests(ReactorBuilder):
         C{writeSequence} pauses its producer if too much data is buffered only
         if this is a streaming producer.
         """
-        client, server = self.client, self.server
         test = self
 
+        @implementer(IPullProducer)
         class SaveActionProducer(object):
-            implements(IPullProducer)
+            client = None
+
             def __init__(self):
                 self.actions = []
 
             def resumeProducing(self):
                 self.actions.append("resume")
                 if self.actions.count("resume") == 2:
-                    client.protocol.transport.stopConsuming()
+                    self.client.transport.stopConsuming()
                 else:
-                    test.setWriteBufferSize(client.protocol.transport, 500)
-                    client.protocol.transport.writeSequence(["x" * 50] * 20)
+                    test.setWriteBufferSize(self.client.transport, 500)
+                    self.client.transport.writeSequence([b"x" * 50] * 20)
 
             def stopProducing(self):
                 self.actions.append("stop")
 
+
         producer = SaveActionProducer()
 
-        def clientConnected(proto):
+        def connected(protocols):
+            client = protocols[0]
+            producer.client = client
             # Register a non-streaming producer and verify that it is resumed
             # immediately.
-            proto.transport.registerProducer(producer, False)
-            self.assertEquals(producer.actions, ["resume"])
+            client.transport.registerProducer(producer, False)
+            self.assertEqual(producer.actions, ["resume"])
 
-        self._producerTest(clientConnected)
+        reactor = self.buildReactor()
+        d = self.getConnectedClientAndServer(reactor, "127.0.0.1",
+                                             socket.AF_INET)
+        d.addCallback(connected)
+        d.addErrback(log.err)
+        self.runReactor(reactor)
         # After the local send buffer empties out, the producer should be
         # resumed again.
-        self.assertEquals(producer.actions, ["resume", "resume"])
+        self.assertEqual(producer.actions, ["resume", "resume"])
+
+
+
+class TCPTransportServerAddressTestMixin(object):
+    """
+    Test mixing for TCP server address building and log prefix.
+    """
+
+    def getConnectedClientAndServer(self, reactor, interface, addressFamily):
+        """
+        Helper method returnine a L{Deferred} firing with a tuple of a client
+        protocol, a server protocol, and a running TCP port.
+        """
+        raise NotImplementedError()
+
+
+    def _testServerAddress(self, interface, addressFamily, adressClass):
+        """
+        Helper method to test TCP server addresses on either IPv4 or IPv6.
+        """
+
+        def connected(protocols):
+            client, server, port = protocols
+            try:
+                self.assertEqual(
+                    "<AccumulatingProtocol #%s on %s>" %
+                        (server.transport.sessionno, port.getHost().port),
+                    str(server.transport))
+
+                self.assertEqual(
+                    "AccumulatingProtocol,%s,%s" %
+                        (server.transport.sessionno, interface),
+                    server.transport.logstr)
+
+                [peerAddress] = server.factory.peerAddresses
+                self.assertIsInstance(peerAddress, adressClass)
+                self.assertEqual('TCP', peerAddress.type)
+                self.assertEqual(interface, peerAddress.host)
+            finally:
+                # Be certain to drop the connection so the test completes.
+                server.transport.loseConnection()
+
+        reactor = self.buildReactor()
+        d = self.getConnectedClientAndServer(reactor, interface, addressFamily)
+        d.addCallback(connected)
+        d.addErrback(log.err)
+        self.runReactor(reactor)
+
+
+    def test_serverAddressTCP4(self):
+        """
+        L{Server} instances have a string representation indicating on which
+        port they're running, and the connected address is stored on the
+        C{peerAddresses} attribute of the factory.
+        """
+        return self._testServerAddress("127.0.0.1", socket.AF_INET,
+                                       IPv4Address)
+
+
+    def test_serverAddressTCP6(self):
+        """
+        IPv6 L{Server} instances have a string representation indicating on
+        which port they're running, and the connected address is stored on the
+        C{peerAddresses} attribute of the factory.
+        """
+        return self._testServerAddress(getLinkLocalIPv6Address(),
+                                       socket.AF_INET6, IPv6Address)
+
+    if ipv6Skip:
+        test_serverAddressTCP6.skip = ipv6Skip
+
+
+
+class TCPTransportTestsBuilder(TCPTransportServerAddressTestMixin,
+                               WriteSequenceTestsMixin, ReactorBuilder):
+    """
+    Test standard L{ITCPTransport}s built with C{listenTCP} and C{connectTCP}.
+    """
+
+    def getConnectedClientAndServer(self, reactor, interface, addressFamily):
+        """
+        Return a L{Deferred} firing with a L{MyClientFactory} and
+        L{MyServerFactory} connected pair, and the listening C{Port}.
+        """
+        server = MyServerFactory()
+        server.protocolConnectionMade = Deferred()
+        server.protocolConnectionLost = Deferred()
+
+        client = MyClientFactory()
+        client.protocolConnectionMade = Deferred()
+        client.protocolConnectionLost = Deferred()
+
+        port = reactor.listenTCP(0, server, interface=interface)
+
+        lostDeferred = gatherResults([client.protocolConnectionLost,
+                                      server.protocolConnectionLost])
+        def stop(result):
+            reactor.stop()
+            return result
+
+        lostDeferred.addBoth(stop)
+
+        startDeferred = gatherResults([client.protocolConnectionMade,
+                                       server.protocolConnectionMade])
+
+        deferred = Deferred()
+
+        def start(protocols):
+            client, server = protocols
+            log.msg("client connected %s" % client)
+            log.msg("server connected %s" % server)
+            deferred.callback((client, server, port))
+
+        startDeferred.addCallback(start)
+
+        reactor.connectTCP(interface, port.getHost().port, client)
+
+        return deferred
+
+
+
+class AdoptStreamConnectionTestsBuilder(TCPTransportServerAddressTestMixin,
+                                        WriteSequenceTestsMixin,
+                                        ReactorBuilder):
+    """
+    Test server transports built using C{adoptStreamConnection}.
+    """
+    requiredInterfaces = (IReactorFDSet, IReactorSocket)
+
+    def getConnectedClientAndServer(self, reactor, interface, addressFamily):
+        """
+        Return a L{Deferred} firing with a L{MyClientFactory} and
+        L{MyServerFactory} connected pair, and the listening C{Port}. The
+        particularity is that the server protocol has been obtained after doing
+        a C{adoptStreamConnection} against the original server connection.
+        """
+        firstServer = MyServerFactory()
+        firstServer.protocolConnectionMade = Deferred()
+
+        server = MyServerFactory()
+        server.protocolConnectionMade = Deferred()
+        server.protocolConnectionLost = Deferred()
+
+        client = MyClientFactory()
+        client.protocolConnectionMade = Deferred()
+        client.protocolConnectionLost = Deferred()
+
+        port = reactor.listenTCP(0, firstServer, interface=interface)
+
+        def firtServerConnected(proto):
+            reactor.removeReader(proto.transport)
+            reactor.removeWriter(proto.transport)
+            reactor.adoptStreamConnection(
+                proto.transport.fileno(), addressFamily, server)
+
+        firstServer.protocolConnectionMade.addCallback(firtServerConnected)
+
+        lostDeferred = gatherResults([client.protocolConnectionLost,
+                                      server.protocolConnectionLost])
+        def stop(result):
+            if reactor.running:
+                reactor.stop()
+            return result
+
+        lostDeferred.addBoth(stop)
+
+        deferred = Deferred()
+        deferred.addErrback(stop)
+
+        startDeferred = gatherResults([client.protocolConnectionMade,
+                                       server.protocolConnectionMade])
+        def start(protocols):
+            client, server = protocols
+            log.msg("client connected %s" % client)
+            log.msg("server connected %s" % server)
+            deferred.callback((client, server, port))
+
+        startDeferred.addCallback(start)
+
+        reactor.connectTCP(interface, port.getHost().port, client)
+        return deferred
+
 
 
 globals().update(TCP4ClientTestsBuilder.makeTestCaseClasses())
@@ -1356,7 +1510,8 @@ globals().update(TCPFDPortTestsBuilder.makeTestCaseClasses())
 globals().update(TCPConnectionTestsBuilder.makeTestCaseClasses())
 globals().update(TCP4ConnectorTestsBuilder.makeTestCaseClasses())
 globals().update(TCP6ConnectorTestsBuilder.makeTestCaseClasses())
-globals().update(WriteSequenceTests.makeTestCaseClasses())
+globals().update(TCPTransportTestsBuilder.makeTestCaseClasses())
+globals().update(AdoptStreamConnectionTestsBuilder.makeTestCaseClasses())
 
 
 
@@ -1391,7 +1546,7 @@ class AbortServerWritingProtocol(ConnectableProtocol):
         """
         Tell the client that the connection is set up and it's time to abort.
         """
-        self.transport.write("ready")
+        self.transport.write(b"ready")
 
 
 
@@ -1403,7 +1558,7 @@ class ReadAbortServerProtocol(AbortServerWritingProtocol):
     """
 
     def dataReceived(self, data):
-        if data.replace('X', ''):
+        if data.replace(b'X', b''):
             raise Exception("Unexpectedly received data.")
 
 
@@ -1436,7 +1591,7 @@ class EventualNoReadServer(ConnectableProtocol):
         if not self.gotData:
             self.gotData = True
             self.transport.registerProducer(self, False)
-            self.transport.write("hello")
+            self.transport.write(b"hello")
 
 
     def resumeProducing(self):
@@ -1475,7 +1630,7 @@ class WritingButNotAbortingClient(BaseAbortingClient):
     """
 
     def connectionMade(self):
-        self.transport.write("hello")
+        self.transport.write(b"hello")
 
 
 
@@ -1497,9 +1652,9 @@ class AbortingClient(BaseAbortingClient):
         # X is written before abortConnection, and so there is a chance it
         # might arrive. Y is written after, and so no Ys should ever be
         # delivered:
-        self.transport.write("X" * 10000)
+        self.transport.write(b"X" * 10000)
         self.transport.abortConnection()
-        self.transport.write("Y" * 10000)
+        self.transport.write(b"Y" * 10000)
 
 
 
@@ -1534,7 +1689,7 @@ class ProducerAbortingClient(ConnectableProtocol):
     producerStopped = False
 
     def write(self):
-        self.transport.write("lalala" * 127000)
+        self.transport.write(b"lalala" * 127000)
         self.inRegisterProducer = True
         self.transport.registerProducer(self, False)
         self.inRegisterProducer = False
@@ -1591,7 +1746,7 @@ class StreamingProducerClient(ConnectableProtocol):
         """
         self.transport.registerProducer(self, True)
         for i in range(100):
-            self.transport.write("1234567890" * 32000)
+            self.transport.write(b"1234567890" * 32000)
 
 
     def resumeProducing(self):
@@ -1646,7 +1801,7 @@ class StreamingProducerClientLater(StreamingProducerClient):
     """
 
     def connectionMade(self):
-        self.transport.write("hello")
+        self.transport.write(b"hello")
         self.gotData = False
 
 
@@ -1857,7 +2012,7 @@ class AbortConnectionMixin(object):
                           AbortServerWritingProtocol,
                           clientConnectionLostReason=ZeroDivisionError)
         errors = self.flushLoggedErrors(ZeroDivisionError)
-        self.assertEquals(len(errors), 1)
+        self.assertEqual(len(errors), 1)
 
 
     def test_resumeProducingThrows(self):
@@ -1873,7 +2028,7 @@ class AbortConnectionMixin(object):
                           ConnectableProtocol,
                           clientConnectionLostReason=ZeroDivisionError)
         errors = self.flushLoggedErrors(ZeroDivisionError)
-        self.assertEquals(len(errors), 1)
+        self.assertEqual(len(errors), 1)
 
 
 
@@ -1881,6 +2036,7 @@ class AbortConnectionTestCase(ReactorBuilder, AbortConnectionMixin):
     """
     TCP-specific L{AbortConnectionMixin} tests.
     """
+    requiredInterfaces = (IReactorTCP,)
 
     endpoints = TCPCreator()
 
@@ -1892,8 +2048,8 @@ class SimpleUtilityTestCase(TestCase):
     """
     Simple, direct tests for helpers within L{twisted.internet.tcp}.
     """
-
-    skip = ipv6Skip
+    if ipv6Skip:
+        skip = ipv6Skip
 
     def test_resolveNumericHost(self):
         """
@@ -1938,6 +2094,3 @@ class SimpleUtilityTestCase(TestCase):
         # but, luckily, IP presentation format and what it means to be a port
         # number are a little better specified.
         self.assertEqual(result[:2], ("::1", 2))
-
-
-

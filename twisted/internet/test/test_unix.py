@@ -23,7 +23,8 @@ from twisted.python.log import addObserver, removeObserver, err
 from twisted.python.failure import Failure
 from twisted.python.hashlib import md5
 from twisted.python.runtime import platform
-from twisted.internet.interfaces import IConnector, IFileDescriptorReceiver
+from twisted.internet.interfaces import (
+    IConnector, IFileDescriptorReceiver, IReactorUNIX)
 from twisted.internet.error import ConnectionClosed, FileDescriptorOverrun
 from twisted.internet.address import UNIXAddress
 from twisted.internet.endpoints import UNIXServerEndpoint, UNIXClientEndpoint
@@ -32,12 +33,12 @@ from twisted.internet.task import LoopingCall
 from twisted.internet import interfaces
 from twisted.internet.protocol import (
     ServerFactory, ClientFactory, DatagramProtocol)
-from twisted.internet.test.reactormixins import ReactorBuilder, EndpointCreator
+from twisted.internet.test.reactormixins import ReactorBuilder
 from twisted.internet.test.test_core import ObjectModelIntegrationMixin
 from twisted.internet.test.test_tcp import StreamTransportTestsMixin
-from twisted.internet.test.reactormixins import (
-    ConnectableProtocol, runProtocolsWithReactor)
-from twisted.internet.test.connectionmixins import ConnectionTestsMixin
+from twisted.internet.test.connectionmixins import (
+    EndpointCreator, ConnectableProtocol, runProtocolsWithReactor,
+    ConnectionTestsMixin)
 
 try:
     from twisted.python import sendmsg
@@ -52,9 +53,6 @@ class UNIXFamilyMixin:
     """
     Test-helper defining mixin for things related to AF_UNIX sockets.
     """
-    if AF_UNIX is None:
-        skip = "Platform does not support AF_UNIX sockets"
-
     def _modeTest(self, methodName, path, factory):
         """
         Assert that the mode of the created unix socket is set to the mode
@@ -82,6 +80,8 @@ class UNIXCreator(EndpointCreator):
     """
     Create UNIX socket end points.
     """
+    requiredInterfaces = (interfaces.IReactorUNIX,)
+
     def server(self, reactor):
         """
         Construct a UNIX server endpoint.
@@ -208,6 +208,8 @@ class UNIXTestsBuilder(UNIXFamilyMixin, ReactorBuilder, ConnectionTestsMixin):
     """
     Builder defining tests relating to L{IReactorUNIX}.
     """
+    requiredInterfaces = (IReactorUNIX,)
+
     endpoints = UNIXCreator()
 
     def test_interface(self):
@@ -375,14 +377,15 @@ class UNIXTestsBuilder(UNIXFamilyMixin, ReactorBuilder, ConnectionTestsMixin):
         server = SendFileDescriptor(cargo.fileno(), None)
 
         client = ReceiveFileDescriptor()
-        d = self.assertFailure(
-            client.waitForDescriptor(), ConnectionClosed)
-        d.addErrback(
-            err, "Sending file descriptor encountered unexpected problem")
+        result = []
+        d = client.waitForDescriptor()
+        d.addBoth(result.append)
         d.addBoth(lambda ignored: server.transport.loseConnection())
 
         runProtocolsWithReactor(self, server, client, self.endpoints)
 
+        self.assertIsInstance(result[0], Failure)
+        result[0].trap(ConnectionClosed)
         self.assertIsInstance(server.reason.value, FileDescriptorOverrun)
     if sendmsgSkip is not None:
         test_fileDescriptorOverrun.skip = sendmsgSkip
@@ -491,6 +494,8 @@ class UNIXDatagramTestsBuilder(UNIXFamilyMixin, ReactorBuilder):
     """
     Builder defining tests relating to L{IReactorUNIXDatagram}.
     """
+    requiredInterfaces = (interfaces.IReactorUNIXDatagram,)
+
     # There's no corresponding test_connectMode because the mode parameter to
     # connectUNIXDatagram has been completely ignored since that API was first
     # introduced.
@@ -523,7 +528,7 @@ class UNIXPortTestsBuilder(ReactorBuilder, ObjectModelIntegrationMixin,
     """
     Tests for L{IReactorUNIX.listenUnix}
     """
-    requiredInterfaces = [interfaces.IReactorUNIX]
+    requiredInterfaces = (interfaces.IReactorUNIX,)
 
     def getListeningPort(self, reactor, factory):
         """

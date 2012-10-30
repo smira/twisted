@@ -4,10 +4,14 @@
 import gc
 import StringIO, sys, types
 
-from twisted.trial import unittest, runner
+from twisted.trial import unittest
+from twisted.trial.runner import (
+    TrialRunner, TestSuite, DestructiveTestSuite, TestLoader)
+from twisted.trial._dist.disttrial import DistTrialRunner
 from twisted.scripts import trial
-from twisted.python import util, deprecate, versions
+from twisted.python import util
 from twisted.python.compat import set
+from twisted.python.usage import UsageError
 from twisted.python.filepath import FilePath
 
 from twisted.trial.test.test_loader import testNames
@@ -16,12 +20,14 @@ pyunit = __import__('unittest')
 
 
 def sibpath(filename):
-    """For finding files in twisted/trial/test"""
+    """
+    For finding files in twisted/trial/test
+    """
     return util.sibpath(__file__, filename)
 
 
 
-class ForceGarbageCollection(unittest.TestCase):
+class ForceGarbageCollection(unittest.SynchronousTestCase):
     """
     Tests for the --force-gc option.
     """
@@ -31,7 +37,7 @@ class ForceGarbageCollection(unittest.TestCase):
         self.log = []
         self.patch(gc, 'collect', self.collect)
         test = pyunit.FunctionTestCase(self.simpleTest)
-        self.test = runner.TestSuite([test, test])
+        self.test = TestSuite([test, test])
 
 
     def simpleTest(self):
@@ -50,7 +56,7 @@ class ForceGarbageCollection(unittest.TestCase):
 
     def makeRunner(self):
         """
-        Return a L{runner.TrialRunner} object that is safe to use in tests.
+        Return a L{TrialRunner} object that is safe to use in tests.
         """
         runner = trial._makeRunner(self.config)
         runner.stream = StringIO.StringIO()
@@ -81,7 +87,7 @@ class ForceGarbageCollection(unittest.TestCase):
 
 
 
-class TestSuiteUsed(unittest.TestCase):
+class TestSuiteUsed(unittest.SynchronousTestCase):
     """
     Check the category of tests suite used by the loader.
     """
@@ -95,24 +101,24 @@ class TestSuiteUsed(unittest.TestCase):
 
     def test_defaultSuite(self):
         """
-        By default, the loader should use L{runner.DestructiveTestSuite}
+        By default, the loader should use L{DestructiveTestSuite}
         """
         loader = trial._getLoader(self.config)
-        self.assertEqual(loader.suiteFactory, runner.DestructiveTestSuite)
+        self.assertEqual(loader.suiteFactory, DestructiveTestSuite)
 
 
     def test_untilFailureSuite(self):
         """
-        The C{until-failure} configuration uses the L{runner.TestSuite} to keep
+        The C{until-failure} configuration uses the L{TestSuite} to keep
         instances alive across runs.
         """
         self.config['until-failure'] = True
         loader = trial._getLoader(self.config)
-        self.assertEqual(loader.suiteFactory, runner.TestSuite)
+        self.assertEqual(loader.suiteFactory, TestSuite)
 
 
 
-class TestModuleTest(unittest.TestCase):
+class TestModuleTest(unittest.SynchronousTestCase):
     def setUp(self):
         self.config = trial.Options()
 
@@ -127,9 +133,9 @@ class TestModuleTest(unittest.TestCase):
         self.assertEqual(testNames(self), [self.id()])
 
     def assertSuitesEqual(self, test1, names):
-        loader = runner.TestLoader()
+        loader = TestLoader()
         names1 = testNames(test1)
-        names2 = testNames(runner.TestSuite(map(loader.loadByName, names)))
+        names2 = testNames(TestSuite(map(loader.loadByName, names)))
         names1.sort()
         names2.sort()
         self.assertEqual(names1, names2)
@@ -310,7 +316,7 @@ class TestModuleTest(unittest.TestCase):
                         "%r should *not* be a test file" % (filename,))
 
 
-class WithoutModuleTests(unittest.TestCase):
+class WithoutModuleTests(unittest.SynchronousTestCase):
     """
     Test the C{without-module} flag.
     """
@@ -391,7 +397,7 @@ class WithoutModuleTests(unittest.TestCase):
 
 
 
-class CoverageTests(unittest.TestCase):
+class CoverageTests(unittest.SynchronousTestCase):
     """
     Tests for the I{coverage} option.
     """
@@ -440,43 +446,151 @@ class CoverageTests(unittest.TestCase):
             options.coverdir(), FilePath(path).child("coverage"))
 
 
-class ExtraTests(unittest.TestCase):
+
+class OptionsTestCase(unittest.TestCase):
     """
-    Tests for the I{extra} option.
+    Tests for L{trial.Options}.
     """
 
     def setUp(self):
-        self.config = trial.Options()
-
-
-    def tearDown(self):
-        self.config = None
-
-
-    def assertDeprecationWarning(self, deprecatedCallable, warnings):
         """
-        Check for a deprecation warning
+        Build an L{Options} object to be used in the tests.
         """
-        self.assertEqual(len(warnings), 1)
-        self.assertEqual(warnings[0]['category'], DeprecationWarning)
-        self.assertEqual(warnings[0]['message'], 
-                          deprecate.getDeprecationWarningString(
-                              deprecatedCallable, versions.Version('Twisted', 11, 0, 0)))
+        self.options = trial.Options()
 
 
-    def test_extraDeprecation(self):
+    def test_getWorkerArguments(self):
         """
-        Check that --extra  will emit a deprecation warning
+        C{_getWorkerArguments} discards options like C{random} as they only
+        matter in the manager, and forwards options like C{recursionlimit} or
+        C{disablegc}.
         """
-        self.config.opt_extra('some.sample.test')
-        self.assertDeprecationWarning(self.config.opt_extra,
-                                      self.flushWarnings([self.test_extraDeprecation]))
+        self.addCleanup(sys.setrecursionlimit, sys.getrecursionlimit())
+        if gc.isenabled():
+            self.addCleanup(gc.enable)
 
-    def test_xDeprecation(self):
-        """
-        Check that -x will emit a deprecation warning
-        """
-        self.config.opt_x('some.sample.text')
-        self.assertDeprecationWarning(self.config.opt_extra,
-                                      self.flushWarnings([self.test_xDeprecation]))
+        self.options.parseOptions(["--recursionlimit", "2000", "--random",
+                                   "4", "--disablegc"])
+        args = self.options._getWorkerArguments()
+        self.assertIn("--disablegc", args)
+        args.remove("--disablegc")
+        self.assertEqual(["--recursionlimit", "2000"], args)
 
+
+    def test_jobsConflictWithDebug(self):
+        """
+        C{parseOptions} raises a C{UsageError} when C{--debug} is passed along
+        C{--jobs} as it's not supported yet.
+
+        @see: U{http://twistedmatrix.com/trac/ticket/5825}
+        """
+        error = self.assertRaises(
+            UsageError, self.options.parseOptions, ["--jobs", "4", "--debug"])
+        self.assertEqual("You can't specify --debug when using --jobs",
+                         str(error))
+
+
+    def test_jobsConflictWithProfile(self):
+        """
+        C{parseOptions} raises a C{UsageError} when C{--profile} is passed
+        along C{--jobs} as it's not supported yet.
+
+        @see: U{http://twistedmatrix.com/trac/ticket/5827}
+        """
+        error = self.assertRaises(
+            UsageError, self.options.parseOptions,
+            ["--jobs", "4", "--profile"])
+        self.assertEqual("You can't specify --profile when using --jobs",
+                         str(error))
+
+
+    def test_jobsConflictWithDebugStackTraces(self):
+        """
+        C{parseOptions} raises a C{UsageError} when C{--debug-stacktraces} is
+        passed along C{--jobs} as it's not supported yet.
+
+        @see: U{http://twistedmatrix.com/trac/ticket/5826}
+        """
+        error = self.assertRaises(
+            UsageError, self.options.parseOptions,
+            ["--jobs", "4", "--debug-stacktraces"])
+        self.assertEqual(
+            "You can't specify --debug-stacktraces when using --jobs",
+            str(error))
+
+
+
+class MakeRunnerTestCase(unittest.TestCase):
+    """
+    Tests for the L{_makeRunner} helper.
+    """
+
+    def test_jobs(self):
+        """
+        L{_makeRunner} returns a L{DistTrialRunner} instance when the C{--jobs}
+        option is passed, and passes the C{workerNumber} and C{workerArguments}
+        parameters to it.
+        """
+        options = trial.Options()
+        options.parseOptions(["--jobs", "4", "--force-gc"])
+        runner = trial._makeRunner(options)
+        self.assertIsInstance(runner, DistTrialRunner)
+        self.assertEqual(4, runner._workerNumber)
+        self.assertEqual(["--force-gc"], runner._workerArguments)
+
+
+    def test_dryRunWithJobs(self):
+        """
+        L{_makeRunner} returns a L{TrialRunner} instance in C{DRY_RUN} mode
+        when the C{--dry-run} option is passed, even if C{--jobs} is set.
+        """
+        options = trial.Options()
+        options.parseOptions(["--jobs", "4", "--dry-run"])
+        runner = trial._makeRunner(options)
+        self.assertIsInstance(runner, TrialRunner)
+        self.assertEqual(TrialRunner.DRY_RUN, runner.mode)
+
+
+    def test_DebuggerNotFound(self):
+        namedAny = trial.reflect.namedAny
+
+        def namedAnyExceptdoNotFind(fqn):
+            if fqn == "doNotFind":
+                raise trial.reflect.ModuleNotFound(fqn)
+            return namedAny(fqn)
+
+        self.patch(trial.reflect, "namedAny", namedAnyExceptdoNotFind)
+
+        options = trial.Options()
+        options.parseOptions(["--debug", "--debugger", "doNotFind"])
+
+        self.assertRaises(trial._DebuggerNotFound, trial._makeRunner, options)
+
+
+class TestRun(unittest.TestCase):
+    """
+    Tests for the L{run} function.
+    """
+
+    def setUp(self):
+        # don't re-parse cmdline options, because if --reactor was passed to
+        # the test run trial will try to restart the (already running) reactor
+        self.patch(trial.Options, "parseOptions", lambda self: None)
+
+
+    def test_debuggerNotFound(self):
+        """
+        When a debugger is not found, an error message is printed to the user.
+
+        """
+
+        def _makeRunner(*args, **kwargs):
+            raise trial._DebuggerNotFound('foo')
+        self.patch(trial, "_makeRunner", _makeRunner)
+
+        try:
+            trial.run()
+        except SystemExit as e:
+            self.assertIn("foo", str(e))
+        else:
+            self.fail("Should have exited due to non-existent debugger!")

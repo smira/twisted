@@ -11,6 +11,34 @@ features as well.  Additionally, some functionality implemented here is
 also useful for HTTP clients (such as the chunked encoding parser).
 """
 
+__all__ = [
+    'SWITCHING', 'OK', 'CREATED', 'ACCEPTED', 'NON_AUTHORITATIVE_INFORMATION',
+    'NO_CONTENT', 'RESET_CONTENT', 'PARTIAL_CONTENT', 'MULTI_STATUS',
+
+    'MULTIPLE_CHOICE', 'MOVED_PERMANENTLY', 'FOUND', 'SEE_OTHER',
+    'NOT_MODIFIED', 'USE_PROXY', 'TEMPORARY_REDIRECT',
+
+    'BAD_REQUEST', 'UNAUTHORIZED', 'PAYMENT_REQUIRED', 'FORBIDDEN', 'NOT_FOUND',
+    'NOT_ALLOWED', 'NOT_ACCEPTABLE', 'PROXY_AUTH_REQUIRED', 'REQUEST_TIMEOUT',
+    'CONFLICT', 'GONE', 'LENGTH_REQUIRED', 'PRECONDITION_FAILED',
+    'REQUEST_ENTITY_TOO_LARGE', 'REQUEST_URI_TOO_LONG',
+    'UNSUPPORTED_MEDIA_TYPE', 'REQUESTED_RANGE_NOT_SATISFIABLE',
+    'EXPECTATION_FAILED',
+
+    'INTERNAL_SERVER_ERROR', 'NOT_IMPLEMENTED', 'BAD_GATEWAY',
+    'SERVICE_UNAVAILABLE', 'GATEWAY_TIMEOUT', 'HTTP_VERSION_NOT_SUPPORTED',
+    'INSUFFICIENT_STORAGE_SPACE', 'NOT_EXTENDED',
+
+    'RESPONSES', 'CACHED',
+
+    'urlparse', 'parse_qs', 'datetimeToString', 'datetimeToLogString', 'timegm',
+    'stringToDatetime', 'toChunk', 'fromChunk', 'parseContentRange',
+
+    'StringTransport', 'HTTPClient', 'NO_BODY_CODES', 'Request',
+    'PotentialDataLoss', 'HTTPChannel', 'HTTPFactory',
+    ]
+
+
 # system imports
 from cStringIO import StringIO
 import tempfile
@@ -35,111 +63,28 @@ from urllib import unquote
 
 from twisted.web.http_headers import _DictHeaders, Headers
 
+from twisted.web._responses import (
+    SWITCHING,
+
+    OK, CREATED, ACCEPTED, NON_AUTHORITATIVE_INFORMATION, NO_CONTENT,
+    RESET_CONTENT, PARTIAL_CONTENT, MULTI_STATUS,
+
+    MULTIPLE_CHOICE, MOVED_PERMANENTLY, FOUND, SEE_OTHER, NOT_MODIFIED,
+    USE_PROXY, TEMPORARY_REDIRECT,
+
+    BAD_REQUEST, UNAUTHORIZED, PAYMENT_REQUIRED, FORBIDDEN, NOT_FOUND,
+    NOT_ALLOWED, NOT_ACCEPTABLE, PROXY_AUTH_REQUIRED, REQUEST_TIMEOUT,
+    CONFLICT, GONE, LENGTH_REQUIRED, PRECONDITION_FAILED,
+    REQUEST_ENTITY_TOO_LARGE, REQUEST_URI_TOO_LONG, UNSUPPORTED_MEDIA_TYPE,
+    REQUESTED_RANGE_NOT_SATISFIABLE, EXPECTATION_FAILED,
+
+    INTERNAL_SERVER_ERROR, NOT_IMPLEMENTED, BAD_GATEWAY, SERVICE_UNAVAILABLE,
+    GATEWAY_TIMEOUT, HTTP_VERSION_NOT_SUPPORTED, INSUFFICIENT_STORAGE_SPACE,
+    NOT_EXTENDED,
+
+    RESPONSES)
+
 protocol_version = "HTTP/1.1"
-
-_CONTINUE = 100
-SWITCHING = 101
-
-OK                              = 200
-CREATED                         = 201
-ACCEPTED                        = 202
-NON_AUTHORITATIVE_INFORMATION   = 203
-NO_CONTENT                      = 204
-RESET_CONTENT                   = 205
-PARTIAL_CONTENT                 = 206
-MULTI_STATUS                    = 207
-
-MULTIPLE_CHOICE                 = 300
-MOVED_PERMANENTLY               = 301
-FOUND                           = 302
-SEE_OTHER                       = 303
-NOT_MODIFIED                    = 304
-USE_PROXY                       = 305
-TEMPORARY_REDIRECT              = 307
-
-BAD_REQUEST                     = 400
-UNAUTHORIZED                    = 401
-PAYMENT_REQUIRED                = 402
-FORBIDDEN                       = 403
-NOT_FOUND                       = 404
-NOT_ALLOWED                     = 405
-NOT_ACCEPTABLE                  = 406
-PROXY_AUTH_REQUIRED             = 407
-REQUEST_TIMEOUT                 = 408
-CONFLICT                        = 409
-GONE                            = 410
-LENGTH_REQUIRED                 = 411
-PRECONDITION_FAILED             = 412
-REQUEST_ENTITY_TOO_LARGE        = 413
-REQUEST_URI_TOO_LONG            = 414
-UNSUPPORTED_MEDIA_TYPE          = 415
-REQUESTED_RANGE_NOT_SATISFIABLE = 416
-EXPECTATION_FAILED              = 417
-
-INTERNAL_SERVER_ERROR           = 500
-NOT_IMPLEMENTED                 = 501
-BAD_GATEWAY                     = 502
-SERVICE_UNAVAILABLE             = 503
-GATEWAY_TIMEOUT                 = 504
-HTTP_VERSION_NOT_SUPPORTED      = 505
-INSUFFICIENT_STORAGE_SPACE      = 507
-NOT_EXTENDED                    = 510
-
-RESPONSES = {
-    # 100
-    _CONTINUE: "Continue",
-    SWITCHING: "Switching Protocols",
-
-    # 200
-    OK: "OK",
-    CREATED: "Created",
-    ACCEPTED: "Accepted",
-    NON_AUTHORITATIVE_INFORMATION: "Non-Authoritative Information",
-    NO_CONTENT: "No Content",
-    RESET_CONTENT: "Reset Content.",
-    PARTIAL_CONTENT: "Partial Content",
-    MULTI_STATUS: "Multi-Status",
-
-    # 300
-    MULTIPLE_CHOICE: "Multiple Choices",
-    MOVED_PERMANENTLY: "Moved Permanently",
-    FOUND: "Found",
-    SEE_OTHER: "See Other",
-    NOT_MODIFIED: "Not Modified",
-    USE_PROXY: "Use Proxy",
-    # 306 not defined??
-    TEMPORARY_REDIRECT: "Temporary Redirect",
-
-    # 400
-    BAD_REQUEST: "Bad Request",
-    UNAUTHORIZED: "Unauthorized",
-    PAYMENT_REQUIRED: "Payment Required",
-    FORBIDDEN: "Forbidden",
-    NOT_FOUND: "Not Found",
-    NOT_ALLOWED: "Method Not Allowed",
-    NOT_ACCEPTABLE: "Not Acceptable",
-    PROXY_AUTH_REQUIRED: "Proxy Authentication Required",
-    REQUEST_TIMEOUT: "Request Time-out",
-    CONFLICT: "Conflict",
-    GONE: "Gone",
-    LENGTH_REQUIRED: "Length Required",
-    PRECONDITION_FAILED: "Precondition Failed",
-    REQUEST_ENTITY_TOO_LARGE: "Request Entity Too Large",
-    REQUEST_URI_TOO_LONG: "Request-URI Too Long",
-    UNSUPPORTED_MEDIA_TYPE: "Unsupported Media Type",
-    REQUESTED_RANGE_NOT_SATISFIABLE: "Requested Range not satisfiable",
-    EXPECTATION_FAILED: "Expectation Failed",
-
-    # 500
-    INTERNAL_SERVER_ERROR: "Internal Server Error",
-    NOT_IMPLEMENTED: "Not Implemented",
-    BAD_GATEWAY: "Bad Gateway",
-    SERVICE_UNAVAILABLE: "Service Unavailable",
-    GATEWAY_TIMEOUT: "Gateway Time-out",
-    HTTP_VERSION_NOT_SUPPORTED: "HTTP Version not supported",
-    INSUFFICIENT_STORAGE_SPACE: "Insufficient Storage Space",
-    NOT_EXTENDED: "Not Extended"
-    }
 
 CACHED = """Magic constant returned by http.Request methods to set cache
 validation headers when the request is conditional and the value fails
@@ -161,7 +106,7 @@ def urlparse(url):
     """
     Parse an URL into six components.
 
-    This is similar to L{urlparse.urlparse}, but rejects C{unicode} input
+    This is similar to C{urlparse.urlparse}, but rejects C{unicode} input
     and always produces C{str} output.
 
     @type url: C{str}
@@ -1295,6 +1240,16 @@ class PotentialDataLoss(Exception):
 
 
 
+class _MalformedChunkedDataError(Exception):
+    """
+    C{_ChunkedTranferDecoder} raises L{_MalformedChunkedDataError} from its
+    C{dataReceived} method when it encounters malformed data. This exception
+    indicates a client-side error. If this exception is raised, the connection
+    should be dropped with a 400 error.
+    """
+
+
+
 class _IdentityTransferDecoder(object):
     """
     Protocol for accumulating bytes up to a specified length.  This handles the
@@ -1399,24 +1354,72 @@ class _ChunkedTransferDecoder(object):
     @ivar length: Counter keeping track of how many more bytes in a chunk there
         are to receive.
 
-    @ivar state: One of C{'chunk-length'}, C{'trailer'}, C{'body'}, or
-        C{'finished'}.  For C{'chunk-length'}, data for the chunk length line
-        is currently being read.  For C{'trailer'}, the CR LF pair which
-        follows each chunk is being read.  For C{'body'}, the contents of a
-        chunk are being read.  For C{'finished'}, the last chunk has been
-        completely read and no more input is valid.
-
-    @ivar finish: A flag indicating that the last chunk has been started.  When
-        it finishes, the state will change to C{'finished'} and no more data
-        will be accepted.
+    @ivar state: One of C{'CHUNK_LENGTH'}, C{'CRLF'}, C{'TRAILER'},
+        C{'BODY'}, or C{'FINISHED'}.  For C{'CHUNK_LENGTH'}, data for the
+        chunk length line is currently being read.  For C{'CRLF'}, the CR LF
+        pair which follows each chunk is being read. For C{'TRAILER'}, the CR
+        LF pair which follows the terminal 0-length chunk is currently being
+        read. For C{'BODY'}, the contents of a chunk are being read. For
+        C{'FINISHED'}, the last chunk has been completely read and no more
+        input is valid.
     """
-    state = 'chunk-length'
-    finish = False
+    state = 'CHUNK_LENGTH'
 
     def __init__(self, dataCallback, finishCallback):
         self.dataCallback = dataCallback
         self.finishCallback = finishCallback
         self._buffer = ''
+
+    def _dataReceived_CHUNK_LENGTH(self, data):
+        if '\r\n' in data:
+            line, rest = data.split('\r\n', 1)
+            parts = line.split(';')
+            try:
+                self.length = int(parts[0], 16)
+            except ValueError:
+                raise _MalformedChunkedDataError(
+                    "Chunk-size must be an integer.")
+            if self.length == 0:
+                self.state = 'TRAILER'
+            else:
+                self.state = 'BODY'
+            return rest
+        else:
+            self._buffer = data
+            return ''
+
+    def _dataReceived_CRLF(self, data):
+        if data.startswith('\r\n'):
+            self.state = 'CHUNK_LENGTH'
+            return data[2:]
+        else:
+            self._buffer = data
+            return ''
+
+    def _dataReceived_TRAILER(self, data):
+        if data.startswith('\r\n'):
+            data = data[2:]
+            self.state = 'FINISHED'
+            self.finishCallback(data)
+        else:
+            self._buffer = data
+        return ''
+
+    def _dataReceived_BODY(self, data):
+        if len(data) >= self.length:
+            chunk, data = data[:self.length], data[self.length:]
+            self.dataCallback(chunk)
+            self.state = 'CRLF'
+            return data
+        elif len(data) < self.length:
+            self.length -= len(data)
+            self.dataCallback(data)
+            return ''
+
+    def _dataReceived_FINISHED(self, data):
+        raise RuntimeError(
+            "_ChunkedTransferDecoder.dataReceived called after last "
+            "chunk was processed")
 
 
     def dataReceived(self, data):
@@ -1427,45 +1430,7 @@ class _ChunkedTransferDecoder(object):
         data = self._buffer + data
         self._buffer = ''
         while data:
-            if self.state == 'chunk-length':
-                if '\r\n' in data:
-                    line, rest = data.split('\r\n', 1)
-                    parts = line.split(';')
-                    self.length = int(parts[0], 16)
-                    if self.length == 0:
-                        self.state = 'trailer'
-                        self.finish = True
-                    else:
-                        self.state = 'body'
-                    data = rest
-                else:
-                    self._buffer = data
-                    data = ''
-            elif self.state == 'trailer':
-                if data.startswith('\r\n'):
-                    data = data[2:]
-                    if self.finish:
-                        self.state = 'finished'
-                        self.finishCallback(data)
-                        data = ''
-                    else:
-                        self.state = 'chunk-length'
-                else:
-                    self._buffer = data
-                    data = ''
-            elif self.state == 'body':
-                if len(data) >= self.length:
-                    chunk, data = data[:self.length], data[self.length:]
-                    self.dataCallback(chunk)
-                    self.state = 'trailer'
-                elif len(data) < self.length:
-                    self.length -= len(data)
-                    self.dataCallback(data)
-                    data = ''
-            elif self.state == 'finished':
-                raise RuntimeError(
-                    "_ChunkedTransferDecoder.dataReceived called after last "
-                    "chunk was processed")
+            data = getattr(self, '_dataReceived_%s' % (self.state,))(data)
 
 
     def noMoreData(self):
@@ -1473,10 +1438,10 @@ class _ChunkedTransferDecoder(object):
         Verify that all data has been received.  If it has not been, raise
         L{_DataLoss}.
         """
-        if self.state != 'finished':
+        if self.state != 'FINISHED':
             raise _DataLoss(
                 "Chunked decoder in %r state, still expecting more data to "
-                "get to finished state." % (self.state,))
+                "get to 'FINISHED' state." % (self.state,))
 
 
 
@@ -1577,7 +1542,13 @@ class HTTPChannel(basic.LineReceiver, policies.TimeoutMixin):
         header = header.lower()
         data = data.strip()
         if header == 'content-length':
-            self.length = int(data)
+            try:
+                self.length = int(data)
+            except ValueError:
+                self.transport.write("HTTP/1.1 400 Bad Request\r\n\r\n")
+                self.length = None
+                self.transport.loseConnection()
+                return
             self._transferDecoder = _IdentityTransferDecoder(
                 self.length, self.requests[-1].handleContentChunk, self._finishRequestBody)
         elif header == 'transfer-encoding' and data.lower() == 'chunked':
@@ -1617,9 +1588,14 @@ class HTTPChannel(basic.LineReceiver, policies.TimeoutMixin):
         req = self.requests[-1]
         req.requestReceived(command, path, version)
 
+
     def rawDataReceived(self, data):
         self.resetTimeout()
-        self._transferDecoder.dataReceived(data)
+        try:
+            self._transferDecoder.dataReceived(data)
+        except _MalformedChunkedDataError:
+            self.transport.write("HTTP/1.1 400 Bad Request\r\n\r\n")
+            self.transport.loseConnection()
 
 
     def allHeadersReceived(self):
@@ -1714,10 +1690,10 @@ class HTTPFactory(protocol.ServerFactory):
 
     @ivar _logDateTime: A cached datetime string for log messages, updated by
         C{_logDateTimeCall}.
-    @type _logDateTime: L{str}
+    @type _logDateTime: C{str}
 
-    @ivar _logDateTimeCall: A delayed call for the next update to the cached log
-        datetime string.
+    @ivar _logDateTimeCall: A delayed call for the next update to the cached
+        log datetime string.
     @type _logDateTimeCall: L{IDelayedCall} provided
     """
 

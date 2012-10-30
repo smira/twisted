@@ -8,24 +8,31 @@
 Defines classes that handle the results of tests.
 """
 
-import sys, os
+from __future__ import division, absolute_import
+
+import sys
+import os
 import time
 import warnings
+import unittest as pyunit
+
+from zope.interface import implementer
 
 from twisted.python.compat import set
-from twisted.python import reflect, log
+from twisted.python import _reflectpy3 as reflect, log
 from twisted.python.components import proxyForInterface
 from twisted.python.failure import Failure
-from twisted.python.util import OrderedDict, untilConcludes
+from twisted.python._utilpy3 import untilConcludes
+try:
+    from collections import OrderedDict
+except ImportError:
+    from twisted.python.util import OrderedDict
 from twisted.trial import itrial, util
 
 try:
     from subunit import TestProtocolClient
 except ImportError:
     TestProtocolClient = None
-from zope.interface import implements
-
-pyunit = __import__('unittest')
 
 
 class BrokenTestCaseWarning(Warning):
@@ -37,7 +44,7 @@ class BrokenTestCaseWarning(Warning):
 class SafeStream(object):
     """
     Wraps a stream object so that all C{write} calls are wrapped in
-    L{untilConcludes}.
+    L{untilConcludes<twisted.python.util.untilConcludes>}.
     """
 
     def __init__(self, original):
@@ -50,6 +57,8 @@ class SafeStream(object):
         return untilConcludes(self.original.write, *a, **kw)
 
 
+
+@implementer(itrial.IReporter)
 class TestResult(pyunit.TestResult, object):
     """
     Accumulates the results of several L{twisted.trial.unittest.TestCase}s.
@@ -57,7 +66,6 @@ class TestResult(pyunit.TestResult, object):
     @ivar successes: count the number of successes achieved by the test run.
     @type successes: C{int}
     """
-    implements(itrial.IReporter)
 
     def __init__(self):
         super(TestResult, self).__init__()
@@ -193,6 +201,7 @@ class TestResult(pyunit.TestResult, object):
 
 
 
+@implementer(itrial.IReporter)
 class TestResultDecorator(proxyForInterface(itrial.IReporter,
                                             "_originalReporter")):
     """
@@ -202,16 +211,14 @@ class TestResultDecorator(proxyForInterface(itrial.IReporter,
     @type _originalReporter: A provider of L{itrial.IReporter}
     """
 
-    implements(itrial.IReporter)
 
 
-
+@implementer(itrial.IReporter)
 class UncleanWarningsReporterWrapper(TestResultDecorator):
     """
     A wrapper for a reporter that converts L{util.DirtyReactorAggregateError}s
     to warnings.
     """
-    implements(itrial.IReporter)
 
     def addError(self, test, error):
         """
@@ -299,6 +306,7 @@ class _AdaptedReporter(TestResultDecorator):
 
 
 
+@implementer(itrial.IReporter)
 class Reporter(TestResult):
     """
     A basic L{TestResult} with support for writing to a stream.
@@ -317,8 +325,6 @@ class Reporter(TestResult):
         events.
     @type _publisher: L{LogPublisher} (or another type sufficiently similar)
     """
-
-    implements(itrial.IReporter)
 
     _separator = '-' * 79
     _doubleSeparator = '=' * 79
@@ -387,7 +393,7 @@ class Reporter(TestResult):
 
     def addFailure(self, test, fail):
         """
-        Called when a test fails. If L{realtime} is set, then it prints the
+        Called when a test fails. If C{realtime} is set, then it prints the
         error to the stream.
 
         @param test: L{ITestCase} that failed.
@@ -401,7 +407,7 @@ class Reporter(TestResult):
 
     def addError(self, test, error):
         """
-        Called when a test raises an error. If L{realtime} is set, then it
+        Called when a test raises an error. If C{realtime} is set, then it
         prints the error to the stream.
 
         @param test: L{ITestCase} that raised the error.
@@ -472,22 +478,29 @@ class Reporter(TestResult):
 
 
     def _trimFrames(self, frames):
-        # when a method fails synchronously, the stack looks like this:
+        # when a SynchronousTestCase method fails synchronously, the stack looks
+        # like this:
+        # [0]: SynchronousTestCase._run
+        # [1]:  _utilpy3.runWithWarningsSuppressed
+        # [2:-2]: code in the test method which failed
+        # [-1]: _synctest.fail
+
+        # when a TestCase method fails synchronously, the stack looks like this:
         #  [0]: defer.maybeDeferred()
         #  [1]: utils.runWithWarningsSuppressed()
         #  [2:-2]: code in the test method which failed
-        #  [-1]: unittest.fail
+        #  [-1]: _synctest.fail
 
         # when a method fails inside a Deferred (i.e., when the test method
         # returns a Deferred, and that Deferred's errback fires), the stack
         # captured inside the resulting Failure looks like this:
         #  [0]: defer.Deferred._runCallbacks
         #  [1:-2]: code in the testmethod which failed
-        #  [-1]: unittest.fail
+        #  [-1]: _synctest.fail
 
         # as a result, we want to trim either [maybeDeferred,runWWS] or
-        # [Deferred._runCallbacks] from the front, and trim the
-        # [unittest.fail] from the end.
+        # [Deferred._runCallbacks] or [SynchronousTestCase._run,runWWS] from the
+        # front, and trim the [unittest.fail] from the end.
 
         # There is also another case, when the test method is badly defined and
         # contains extra arguments.
@@ -497,15 +510,19 @@ class Reporter(TestResult):
         if len(frames) < 2:
             return newFrames
 
-        first = newFrames[0]
-        second = newFrames[1]
-        if (first[0] == "maybeDeferred"
-            and os.path.splitext(os.path.basename(first[1]))[0] == 'defer'
-            and second[0] == "runWithWarningsSuppressed"
-            and os.path.splitext(os.path.basename(second[1]))[0] == 'utils'):
+        firstMethod = newFrames[0][0]
+        firstFile = os.path.splitext(os.path.basename(newFrames[0][1]))[0]
+
+        secondMethod = newFrames[1][0]
+        secondFile = os.path.splitext(os.path.basename(newFrames[1][1]))[0]
+
+        syncCase = (("_run", "_synctest"), ("runWithWarningsSuppressed", "_utilpy3"))
+        asyncCase = (("maybeDeferred", "defer"), ("runWithWarningsSuppressed", "utils"))
+
+        twoFrames = ((firstMethod, firstFile), (secondMethod, secondFile))
+        if twoFrames in [syncCase, asyncCase]:
             newFrames = newFrames[2:]
-        elif (first[0] == "_runCallbacks"
-              and os.path.splitext(os.path.basename(first[1]))[0] == 'defer'):
+        elif (firstMethod, firstFile) == ("_runCallbacks", "defer"):
             newFrames = newFrames[1:]
 
         if not newFrames:
@@ -514,7 +531,7 @@ class Reporter(TestResult):
 
         last = newFrames[-1]
         if (last[0].startswith('fail')
-            and os.path.splitext(os.path.basename(last[1]))[0] == 'unittest'):
+            and os.path.splitext(os.path.basename(last[1]))[0] == '_synctest'):
             newFrames = newFrames[:-1]
 
         return newFrames
@@ -657,8 +674,8 @@ class Reporter(TestResult):
         tests that were run and how long it took to run them (not including
         load time).
 
-        Expects that L{_printErrors}, L{_writeln}, L{_write}, L{_printSummary}
-        and L{_separator} are all implemented.
+        Expects that C{_printErrors}, C{_writeln}, C{_write}, C{_printSummary}
+        and C{_separator} are all implemented.
         """
         if self._publisher is not None:
             self._publisher.removeObserver(self._observeWarnings)
@@ -919,6 +936,7 @@ class _NullColorizer(object):
 
 
 
+@implementer(itrial.IReporter)
 class SubunitReporter(object):
     """
     Reports test output via Subunit.
@@ -930,8 +948,6 @@ class SubunitReporter(object):
 
     @since: 10.0
     """
-    implements(itrial.IReporter)
-
 
     def __init__(self, stream=sys.stdout, tbformat='default',
                  realtime=False, publisher=None):
@@ -1158,7 +1174,7 @@ class TreeReporter(Reporter):
         if len(segments) == 0:
             return segments
         segments = [
-            seg for seg in '.'.join(segments[:-1]), segments[-1]
+            seg for seg in ('.'.join(segments[:-1]), segments[-1])
             if len(seg) > 0]
         return segments
 

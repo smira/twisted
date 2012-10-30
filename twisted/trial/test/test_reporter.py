@@ -6,7 +6,7 @@
 """
 Tests for L{twisted.trial.reporter}.
 """
-
+from __future__ import division
 
 import errno, sys, os, re, StringIO
 from inspect import getmro
@@ -45,7 +45,7 @@ class BrokenStream(object):
         raise IOError(errno.EINTR, "Interrupted flush")
 
 
-class StringTest(unittest.TestCase):
+class StringTest(unittest.SynchronousTestCase):
     def stringComparison(self, expect, output):
         output = filter(None, output)
         self.failUnless(len(expect) <= len(output),
@@ -67,7 +67,7 @@ class StringTest(unittest.TestCase):
                                 % (exp,))
 
 
-class TestTestResult(unittest.TestCase):
+class TestTestResult(unittest.SynchronousTestCase):
     def setUp(self):
         self.result = reporter.TestResult()
 
@@ -121,18 +121,19 @@ class TestErrorReporting(StringTest):
         reported in the output stream with the I{ERROR} tag along with a summary
         of what error was reported and the ID of the test.
         """
-        suite = self.loader.loadClass(erroneous.TestFailureInSetUp)
+        cls = erroneous.SynchronousTestFailureInSetUp
+        suite = self.loader.loadClass(cls)
         output = self.getOutput(suite).splitlines()
         match = [
             self.doubleSeparator,
             '[ERROR]',
             'Traceback (most recent call last):',
             re.compile(r'^\s+File .*erroneous\.py., line \d+, in setUp$'),
-            re.compile(r'^\s+raise FoolishError, '
-                       r'.I am a broken setUp method.$'),
+            re.compile(r'^\s+raise FoolishError.'
+                       r'.I am a broken setUp method..$'),
             ('twisted.trial.test.erroneous.FoolishError: '
              'I am a broken setUp method'),
-            'twisted.trial.test.erroneous.TestFailureInSetUp.test_noop']
+            '%s.%s.test_noop' % (cls.__module__, cls.__name__)]
         self.stringComparison(match, output)
 
 
@@ -193,6 +194,13 @@ class TestErrorReporting(StringTest):
             self.doubleSeparator,
             '[FAIL]',
             'Traceback (most recent call last):',
+            # Some irrelevant trial implementation details leak into the traceback:
+            re.compile(r'^\s+File .*$'),
+            re.compile(r'^\s+.*$'),
+            re.compile(r'^\s+File .*$'),
+            re.compile(r'^\s+.*$'),
+            re.compile(r'^\s+File .*$'),
+            re.compile(r'^\s+.*$'),
             re.compile(r'^\s+File .*erroneous\.py., line \d+, in '
                        'testHiddenException$'),
             re.compile(r'^\s+self\.fail\("Deliberate failure to mask the '
@@ -227,7 +235,7 @@ class TestUncleanWarningWrapperErrorReporting(TestErrorReporting):
 
 
 
-class TracebackHandling(unittest.TestCase):
+class TracebackHandling(unittest.SynchronousTestCase):
     def getErrorFrames(self, test):
         stream = StringIO.StringIO()
         result = reporter.Reporter(stream)
@@ -319,7 +327,7 @@ exceptions.TypeError: iterable argument required
         self.assertEqual(self.f.frames, frames)
 
 
-class PyunitTestNames(unittest.TestCase):
+class PyunitTestNames(unittest.SynchronousTestCase):
     def setUp(self):
         self.stream = StringIO.StringIO()
         self.test = sample.PyunitTest('test_foo')
@@ -390,7 +398,7 @@ class PyunitTestNames(unittest.TestCase):
 
 
 
-class TestDirtyReactor(unittest.TestCase):
+class TestDirtyReactor(unittest.SynchronousTestCase):
     """
     The trial script has an option to treat L{DirtyReactorAggregateError}s as
     warnings, as a migration tool for test authors. It causes a wrapper to be
@@ -461,7 +469,7 @@ class TestDirtyReactor(unittest.TestCase):
 
 
 
-class TrialTestNames(unittest.TestCase):
+class TrialTestNames(unittest.SynchronousTestCase):
 
     def setUp(self):
         self.stream = StringIO.StringIO()
@@ -492,7 +500,7 @@ class TrialTestNames(unittest.TestCase):
         self.assertEqual(output, "test_foo")
 
 
-class TestSkip(unittest.TestCase):
+class TestSkip(unittest.SynchronousTestCase):
     """
     Tests for L{reporter.Reporter}'s handling of skips.
     """
@@ -585,7 +593,7 @@ class UncleanWarningSkipTest(TestSkip):
 
 
 
-class TodoTest(unittest.TestCase):
+class TodoTest(unittest.SynchronousTestCase):
     """
     Tests for L{reporter.Reporter}'s handling of todos.
     """
@@ -735,7 +743,7 @@ class MockColorizer:
 
 
 
-class TestTreeReporter(unittest.TestCase):
+class TestTreeReporter(unittest.SynchronousTestCase):
     def setUp(self):
         self.test = sample.FooTest('test_foo')
         self.stream = StringIO.StringIO()
@@ -844,8 +852,8 @@ class TestTreeReporter(unittest.TestCase):
             extra = sample.FooTest('test_bar')
             self.result.addError(extra, sys.exc_info())
         self.result.done()
-	grouped = self.result._groupResults(
-	    self.result.errors, self.result._formatFailureTraceback)
+        grouped = self.result._groupResults(
+            self.result.errors, self.result._formatFailureTraceback)
         self.assertEqual(grouped[0][1], [self, self.test])
         self.assertEqual(grouped[1][1], [extra])
 
@@ -883,7 +891,7 @@ class TestTreeReporter(unittest.TestCase):
 
 
 
-class TestReporterInterface(unittest.TestCase):
+class TestReporterInterface(unittest.SynchronousTestCase):
     """
     Tests for the bare interface of a trial reporter.
 
@@ -1150,7 +1158,7 @@ class TestReporter(TestReporterInterface):
 
 
 
-class TestSafeStream(unittest.TestCase):
+class TestSafeStream(unittest.SynchronousTestCase):
     def test_safe(self):
         """
         Test that L{reporter.SafeStream} successfully write to its original
@@ -1375,7 +1383,7 @@ class TestSubunitReporter(TestReporterInterface):
 
 
 
-class TestSubunitReporterNotInstalled(unittest.TestCase):
+class TestSubunitReporterNotInstalled(unittest.SynchronousTestCase):
     """
     Test behaviour when the subunit reporter is not installed.
     """
@@ -1429,7 +1437,7 @@ class LoggingReporter(reporter.Reporter):
 
 
 
-class TestAdaptedReporter(unittest.TestCase):
+class TestAdaptedReporter(unittest.SynchronousTestCase):
     """
     L{reporter._AdaptedReporter} is a reporter wrapper that wraps all of the
     tests it receives before passing them on to the original reporter.
@@ -1540,7 +1548,7 @@ class FakeStream(object):
 
 
 
-class AnsiColorizerTests(unittest.TestCase):
+class AnsiColorizerTests(unittest.SynchronousTestCase):
     """
     Tests for L{reporter._AnsiColorizer}.
     """
