@@ -8,6 +8,9 @@
 Twisted: The Framework Of Your Internet.
 """
 
+import warnings
+
+
 def _checkRequirements():
     # Don't allow the user to run a version of Python we don't support.
     import sys
@@ -27,7 +30,8 @@ def _checkRequirements():
         from zope import interface
     except ImportError:
         # It isn't installed.
-        raise ImportError(required + ": no module named zope.interface.")
+        warnings.warn(required + ": no module named zope.interface.", RuntimeWarning)
+        return
     except:
         # It is installed but not compatible with this version of Python.
         raise ImportError(required + ".")
