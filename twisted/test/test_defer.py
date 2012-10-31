@@ -1754,7 +1754,6 @@ class LogTestCase(unittest.SynchronousTestCase):
         def _subErrorLogWithInnerFrameCycle():
             d = defer.Deferred()
             d.addCallback(lambda x, d=d: 1 // 0)
-            d._d = d
             d.callback(1)
             d.result = d
 
@@ -2172,5 +2171,6 @@ if not _PY3:
             d = self.lock.deferUntilLocked()
             d.addCallback(lockAquired)
 
+            self.clock.advance(1)
 
             return d
