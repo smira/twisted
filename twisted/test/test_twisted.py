@@ -271,6 +271,7 @@ class RequirementsTests(TestCase):
         L{_checkRequirements} raises L{ImportError} when the C{zope} namespace
         package is not installed.
         """
+        raise SkipTest("Skipped as patched to be warning")
         with SetAsideModule("zope"):
             # After an import for a module fails, it gets a None value in
             # sys.modules as a cache of that negative result.  Future import
@@ -289,6 +290,7 @@ class RequirementsTests(TestCase):
         L{_checkRequirements} raises L{ImportError} when the C{zope.interface}
         package is not installed.
         """
+        raise SkipTest("Skipped as patched to be warning")
         with SetAsideModule("zope"):
             # Create a minimal module to represent the zope namespace package, but
             # don't give it an "interface" attribute.
