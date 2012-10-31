@@ -181,7 +181,7 @@ class DelayedCall:
             if hasattr(self.func, '__qualname__'):
                 func = self.func.__qualname__
             elif hasattr(self.func, '__name__'):
-                func = self.func.func_name
+                func = self.func.__name__
                 if hasattr(self.func, 'im_class'):
                     func = self.func.im_class.__name__ + '.' + func
             else:
