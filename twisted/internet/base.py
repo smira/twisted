@@ -266,7 +266,7 @@ class ThreadedResolver(object):
         userDeferred = defer.Deferred()
         lookupDeferred = threads.deferToThreadPool(
             self.reactor, self.reactor.getThreadPool(),
-            socket.gethostbyname_ex, name).addCallback(lambda res: sorted(res[2]))
+            socket.getaddrinfo, name, None).addCallback(lambda res: [h[4][0] for h in res])
         cancelCall = self.reactor.callLater(
             timeoutDelay, self._cleanup, name, lookupDeferred)
         self._runningQueries[lookupDeferred] = (userDeferred, cancelCall)
